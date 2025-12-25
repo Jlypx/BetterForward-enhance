@@ -1,2 +1,28 @@
 .DS_Store
 .vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data
+data/
+*.db
+*.db-journal
+
+# Logs
+*.log
+
+# Environment
+.env
