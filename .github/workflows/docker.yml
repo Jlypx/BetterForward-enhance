@@ -12,7 +12,7 @@ permissions:
 env:
   GHCR_REGISTRY: ghcr.io
   GHCR_IMAGE_NAME: ${{ github.repository }}
-  DOCKERHUB_IMAGE_NAME: pplulee/betterforward
+  DOCKERHUB_IMAGE_NAME: pokstay/betterforward-enhance
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
