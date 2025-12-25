@@ -87,11 +87,18 @@ class Database:
             db.close()
 
     def set_setting(self, key: str, value: str):
-        """Set a setting value in the database."""
+        """Set a setting value in the database.
+
+        Uses UPDATE first, then INSERT if the key doesn't exist.
+        """
         db = self.get_connection()
         try:
             db_cursor = db.cursor()
+            # Try to update existing key
             db_cursor.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))
+            # If no rows were updated, insert new key
+            if db_cursor.rowcount == 0:
+                db_cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (key, value))
         finally:
             db.close()
 
