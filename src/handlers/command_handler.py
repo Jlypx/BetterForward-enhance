@@ -105,15 +105,36 @@ class CommandHandler:
             self.bot.send_message(message.chat.id, _("This command is only available to admin users."))
             return
 
+        # First priority: Check if replying to a message in Blocked Messages topic
+        if message.reply_to_message:
+            # Try to get user_id from forward_from (if available)
+            if message.reply_to_message.forward_from:
+                user_id = message.reply_to_message.forward_from.id
+                logger.info(_("Unbanning user {} via replied forwarded message").format(user_id))
+            # If no forward_from, try to parse from our info message
+            elif message.reply_to_message.text and "(ID:" in message.reply_to_message.text:
+                import re
+                # Extract user ID from text like "User: Name (ID: 123456)"
+                match = re.search(r'\(ID:\s*(\d+)\)', message.reply_to_message.text)
+                if match:
+                    user_id = int(match.group(1))
+                    logger.info(_("Unbanning user {} via parsed message text").format(user_id))
+
+        # Second priority: Extract from command argument
         if user_id is None:
             if self.check_valid_chat(message):
-                if len((msg_split := message.text.split(" "))) != 2:
-                    self.bot.reply_to(message, "Invalid command\n"
-                                               "Correct usage:```\n"
-                                               "/unban <user ID>```", parse_mode="Markdown")
-                    return
-                user_id = int(msg_split[1])
+                if len((msg_split := message.text.split(" "))) == 2:
+                    try:
+                        user_id = int(msg_split[1])
+                    except ValueError:
+                        self.bot.reply_to(message, _("Invalid user ID\n"
+                                                     "Correct usage:```\n"
+                                                     "/unban <user ID>```\n\n"
+                                                     "Or reply to a message in Blocked Messages topic with /unban"),
+                                        parse_mode="Markdown")
+                        return
 
+        # Third priority: Get user_id from thread
         if user_id is None:
             with sqlite3.connect(self.db_path) as db:
                 db_cursor = db.cursor()
@@ -138,7 +159,7 @@ class CommandHandler:
                 # Check if user exists in blocked_users table
                 db_cursor.execute("SELECT 1 FROM blocked_users WHERE user_id = ? LIMIT 1", (user_id,))
                 if db_cursor.fetchone() is None:
-                    self.bot.send_message(self.group_id, _("User not found"))
+                    self.bot.reply_to(message, _("User {} is not blocked").format(user_id))
                     return
 
                 # Remove from blocked_users table

@@ -1239,3 +1239,66 @@ msgstr "❌ 答案错误。申诉验证失败。\n\n请点击申诉按钮重试�
 
 msgid "❌ Your account has been blocked. If you believe this is a mistake, you can submit an appeal (one-time opportunity)."
 msgstr "❌ 您的账户已被封禁。如果您认为这是误判，可以提交申诉（仅有一次机会）。"
+
+msgid "❌ Your account has been blocked by an administrator."
+msgstr "❌ 您的账户已被管理员封禁。"
+
+msgid "Blocked Messages topic loaded: {}"
+msgstr "Blocked Messages 话题已加载：{}"
+
+msgid "Invalid Blocked Messages topic ID in database: {}"
+msgstr "数据库中的 Blocked Messages 话题 ID 无效：{}"
+
+msgid "Creating Blocked Messages topic..."
+msgstr "正在创建 Blocked Messages 话题……"
+
+msgid "Blocked Messages topic created with ID: {}"
+msgstr "Blocked Messages 话题已创建，ID：{}"
+
+msgid "This topic is used to collect messages from blocked users.\nMessages here are automatically forwarded from blocked users.\nAdmins can reply to a message and use /unban to unblock the user."
+msgstr "此话题用于收集被封禁用户的消息。\n这里的消息是从被封禁用户自动转发而来的。\n管理员可以回复消息并使用 /unban 解除封禁。"
+
+msgid "Failed to create Blocked Messages topic: {}"
+msgstr "创建 Blocked Messages 话题失败：{}"
+
+msgid "Failed to reset Blocked Messages topic: {}"
+msgstr "重置 Blocked Messages 话题失败：{}"
+
+msgid "Blocked Messages topic ID not found"
+msgstr "未找到 Blocked Messages 话题 ID"
+
+msgid "Auto-blocked (3 failed verification attempts)"
+msgstr "自动封禁（3次验证失败）"
+
+msgid "Blocked by administrator"
+msgstr "被管理员封禁"
+
+msgid "🚫 Blocked User Message\n\nUser: {} (ID: {})\nUsername: @{}\nBlock Reason: {}\n\n💡 Reply to this message with /unban to unblock"
+msgstr "🚫 被封禁用户消息\n\n用户：{} (ID: {})\n用户名：@{}\n封禁原因：{}\n\n💡 回复本消息并使用 /unban 以解除封禁"
+
+msgid "Forwarded blocked user message from {} to Blocked Messages topic"
+msgstr "已将用户 {} 的消息转发至 Blocked Messages 话题"
+
+msgid "Failed to forward blocked message: {}"
+msgstr "转发被封禁消息失败：{}"
+
+msgid "Unbanning user {} via replied message"
+msgstr "通过回复消息解封用户 {}"
+
+msgid "Invalid user ID\nCorrect usage:```\n/unban <user ID>```\n\nOr reply to a message in Blocked Messages topic with /unban"
+msgstr "无效的用户 ID\n正确用法：```\n/unban <用户ID>```\n\n或在 Blocked Messages 话题中回复消息并使用 /unban"
+
+msgid "User {} is not blocked"
+msgstr "用户 {} 未被封禁"
+
+msgid "Failed to send appeal message to user {}: {}"
+msgstr "向用户 {} 发送申诉消息失败：{}"
+
+msgid "Failed to send blocked message to user {}: {}"
+msgstr "向用户 {} 发送封禁消息失败：{}"
+
+msgid "Unbanning user {} via replied forwarded message"
+msgstr "通过回复转发消息解封用户 {}"
+
+msgid "Unbanning user {} via parsed message text"
+msgstr "通过解析消息文本解封用户 {}"

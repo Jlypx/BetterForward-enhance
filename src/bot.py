@@ -190,6 +190,9 @@ class TGBot:
         # Check and create spam topic if not exists
         self._ensure_spam_topic()
 
+        # Check and create blocked messages topic if not exists
+        self._ensure_blocked_topic()
+
         self.bot.send_message(self.group_id, _("Bot started successfully"))
 
     def _ensure_spam_topic(self):
@@ -253,6 +256,70 @@ class TGBot:
             return True
         except Exception as e:
             logger.error(_("Failed to reset spam topic: {}").format(str(e)))
+            return False
+
+    def _ensure_blocked_topic(self):
+        """Ensure blocked messages topic exists, create if not."""
+        self._create_or_load_blocked_topic()
+
+    def _create_or_load_blocked_topic(self):
+        """Create or load blocked messages topic."""
+        blocked_topic_id = self.database.get_setting('blocked_topic')
+
+        # If blocked topic ID is not set or is None, create a new topic
+        if blocked_topic_id is None or blocked_topic_id == 'None':
+            self._create_blocked_topic()
+        else:
+            # Load existing blocked topic ID into cache
+            try:
+                blocked_topic_id = int(blocked_topic_id)
+                self.cache.set("blocked_topic_id", blocked_topic_id)
+                logger.info(_("Blocked Messages topic loaded: {}").format(blocked_topic_id))
+            except (ValueError, TypeError):
+                logger.error(_("Invalid Blocked Messages topic ID in database: {}").format(blocked_topic_id))
+                self._create_blocked_topic()
+
+    def _create_blocked_topic(self):
+        """Create a new Blocked Messages topic."""
+        try:
+            from telebot.apihelper import create_forum_topic
+            logger.info(_("Creating Blocked Messages topic..."))
+            topic = create_forum_topic(
+                chat_id=self.group_id,
+                name="🚫 Blocked Messages",
+                token=self.bot.token
+            )
+            blocked_topic_id = topic["message_thread_id"]
+            self.database.set_setting('blocked_topic', str(blocked_topic_id))
+            self.cache.set("blocked_topic_id", blocked_topic_id)
+            logger.info(_("Blocked Messages topic created with ID: {}").format(blocked_topic_id))
+
+            # Send a pin message to the blocked topic (silently)
+            pin_msg = self.bot.send_message(
+                self.group_id,
+                _("This topic is used to collect messages from blocked users.\n"
+                  "Messages here are automatically forwarded from blocked users.\n"
+                  "Admins can reply to a message and use /unban to unblock the user."),
+                message_thread_id=blocked_topic_id,
+                disable_notification=True
+            )
+            self.bot.pin_chat_message(self.group_id, pin_msg.message_id)
+        except Exception as e:
+            logger.error(_("Failed to create Blocked Messages topic: {}").format(str(e)))
+            raise
+
+    def reset_blocked_topic(self):
+        """Reset blocked messages topic by creating a new one."""
+        try:
+            # Clear old setting
+            self.database.set_setting('blocked_topic', None)
+            self.cache.delete("blocked_topic_id")
+
+            # Create new topic
+            self._create_blocked_topic()
+            return True
+        except Exception as e:
+            logger.error(_("Failed to reset Blocked Messages topic: {}").format(str(e)))
             return False
 
     def push_messages(self, message):

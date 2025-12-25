@@ -72,10 +72,12 @@ class MessageHandler:
             return
 
         # Check if the user is blocked
-        is_blocked = cursor.execute("SELECT 1 FROM blocked_users WHERE user_id = ? LIMIT 1",
-                                    (message.from_user.id,)).fetchone() is not None
+        blocked_result = cursor.execute("SELECT block_reason FROM blocked_users WHERE user_id = ? LIMIT 1",
+                                       (message.from_user.id,)).fetchone()
 
-        if is_blocked:
+        if blocked_result:
+            block_reason = blocked_result[0] if blocked_result[0] else "admin"
+
             # Update user info in blocked_users table
             cursor.execute(
                 "UPDATE blocked_users SET username = ?, first_name = ?, last_name = ? WHERE user_id = ?",
@@ -87,15 +89,48 @@ class MessageHandler:
             logger.info(_("Message from blocked user {} rejected ({:.2f}ms)").format(
                 message.from_user.id, processing_time))
 
-            # Send auto-reply if enabled
-            if self.cache.get("setting_blocked_user_reply_enabled") == "enable":
-                reply_message = self.cache.get("setting_blocked_user_reply_message")
-                if reply_message:
+            # Forward message to Blocked Messages topic
+            self._forward_blocked_message(message, block_reason)
+
+            # Send appropriate reply based on block reason
+            if block_reason == "auto_attempts":
+                # Auto-blocked: show appeal button
+                import json
+                from telebot import types
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton(
+                    _("Appeal"),
+                    callback_data=json.dumps({"action": "appeal_request", "user_id": message.from_user.id})
+                ))
+                try:
+                    self.bot.send_message(
+                        message.chat.id,
+                        _("❌ Your account has been blocked. If you believe this is a mistake, you can submit an appeal (one-time opportunity)."),
+                        reply_markup=markup
+                    )
+                except Exception as e:
+                    logger.error(_("Failed to send appeal message to user {}: {}").format(
+                        message.from_user.id, str(e)))
+            else:
+                # Admin blocked: send custom blocked user reply if enabled
+                if self.cache.get("setting_blocked_user_reply_enabled") == "enable":
+                    reply_message = self.cache.get("setting_blocked_user_reply_message")
+                    if reply_message:
+                        try:
+                            self.bot.send_message(message.chat.id, reply_message)
+                            logger.info(_("Sent auto-reply to blocked user {}").format(message.from_user.id))
+                        except Exception as e:
+                            logger.error(_("Failed to send auto-reply to blocked user {}: {}").format(
+                                message.from_user.id, str(e)))
+                else:
+                    # Send default admin blocked message
                     try:
-                        self.bot.send_message(message.chat.id, reply_message)
-                        logger.info(_("Sent auto-reply to blocked user {}").format(message.from_user.id))
+                        self.bot.send_message(
+                            message.chat.id,
+                            _("❌ Your account has been blocked by an administrator.")
+                        )
                     except Exception as e:
-                        logger.error(_("Failed to send auto-reply to blocked user {}: {}").format(
+                        logger.error(_("Failed to send blocked message to user {}: {}").format(
                             message.from_user.id, str(e)))
 
             return
@@ -226,12 +261,14 @@ class MessageHandler:
         user_id = message.from_user.id
 
         # FIRST: Check if user is blocked - if so, don't generate any captcha
-        is_blocked = cursor.execute(
-            "SELECT 1 FROM blocked_users WHERE user_id = ? LIMIT 1",
+        blocked_result = cursor.execute(
+            "SELECT block_reason FROM blocked_users WHERE user_id = ? LIMIT 1",
             (user_id,)
-        ).fetchone() is not None
+        ).fetchone()
 
-        if is_blocked:
+        if blocked_result:
+            block_reason = blocked_result[0] if blocked_result[0] else "admin"
+
             # Check if user is in appeal verification mode
             appeal_verification = self.cache.get(f"appeal_verification_{user_id}")
             if appeal_verification:
@@ -257,19 +294,35 @@ class MessageHandler:
                     self.cache.delete(f"captcha_{user_id}")
                     return False
             else:
-                # User is blocked, send message with appeal button
-                import json
-                from telebot import types
-                markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton(
-                    _("Appeal"),
-                    callback_data=json.dumps({"action": "appeal_request", "user_id": user_id})
-                ))
-                self.bot.send_message(
-                    message.chat.id,
-                    _("❌ Your account has been blocked. If you believe this is a mistake, you can submit an appeal (one-time opportunity)."),
-                    reply_markup=markup
-                )
+                # Forward message to Blocked Messages topic
+                self._forward_blocked_message(message, block_reason)
+
+                # User is blocked - show different messages based on block reason
+                if block_reason == "auto_attempts":
+                    # Auto-blocked: show appeal button
+                    import json
+                    from telebot import types
+                    markup = types.InlineKeyboardMarkup()
+                    markup.add(types.InlineKeyboardButton(
+                        _("Appeal"),
+                        callback_data=json.dumps({"action": "appeal_request", "user_id": user_id})
+                    ))
+                    self.bot.send_message(
+                        message.chat.id,
+                        _("❌ Your account has been blocked. If you believe this is a mistake, you can submit an appeal (one-time opportunity)."),
+                        reply_markup=markup
+                    )
+                else:
+                    # Admin blocked: show custom blocked user reply
+                    blocked_user_reply = self.cache.get("setting_blocked_user_reply")
+                    if blocked_user_reply:
+                        self.bot.send_message(message.chat.id, blocked_user_reply)
+                    else:
+                        # Default message if no custom reply set
+                        self.bot.send_message(
+                            message.chat.id,
+                            _("❌ Your account has been blocked by an administrator.")
+                        )
                 return False
 
         # Captcha Handler - User is answering a captcha
@@ -464,6 +517,61 @@ class MessageHandler:
                   "Please review and decide:").format(full_name, user_id, username),
                 reply_markup=markup
             )
+
+    def _forward_blocked_message(self, message: Message, block_reason: str):
+        """Forward blocked user's message to Blocked Messages topic."""
+        try:
+            blocked_topic_id = self.cache.get("blocked_topic_id")
+
+            if blocked_topic_id is None:
+                # Try to create blocked topic if it doesn't exist
+                if self.bot_instance:
+                    self.bot_instance._create_blocked_topic()
+                    blocked_topic_id = self.cache.get("blocked_topic_id")
+
+            if blocked_topic_id is None:
+                logger.error(_("Blocked Messages topic ID not found"))
+                return
+
+            # Get user info
+            username = message.from_user.username or "N/A"
+            first_name = message.from_user.first_name or ""
+            last_name = message.from_user.last_name or ""
+            full_name = f"{first_name} {last_name}".strip() or "N/A"
+            user_id = message.from_user.id
+
+            # Determine block reason text
+            if block_reason == "auto_attempts":
+                reason_text = _("Auto-blocked (3 failed verification attempts)")
+            else:
+                reason_text = _("Blocked by administrator")
+
+            # Forward the message first
+            fwd_msg = self.bot.forward_message(
+                chat_id=self.group_id,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id,
+                message_thread_id=blocked_topic_id
+            )
+
+            # Reply to the forwarded message with user info
+            info_text = _("🚫 Blocked User Message\n\n"
+                         "User: {} (ID: {})\n"
+                         "Username: @{}\n"
+                         "Block Reason: {}\n\n"
+                         "💡 Reply to this message with /unban to unblock").format(full_name, user_id, username, reason_text)
+
+            self.bot.send_message(
+                self.group_id,
+                info_text,
+                message_thread_id=blocked_topic_id,
+                reply_to_message_id=fwd_msg.message_id,
+                disable_notification=True
+            )
+
+            logger.info(_("Forwarded blocked user message from {} to Blocked Messages topic").format(user_id))
+        except Exception as e:
+            logger.error(_("Failed to forward blocked message: {}").format(str(e)))
 
     def _handle_auto_response(self, message: Message):
         """Handle automatic responses."""
