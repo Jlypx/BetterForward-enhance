@@ -34,10 +34,11 @@ ADD main.py /app
 ADD src /app/src
 ADD db_migrate /app/db_migrate
 
-ENV TOKEN=""
-ENV GROUP_ID=""
+# Default environment variables (non-sensitive)
 ENV LANGUAGE="en_US"
-ENV TG_API=""
 ENV WORKER="2"
 
-CMD python -u /app/main.py -token "$TOKEN" -group_id "$GROUP_ID" -language "$LANGUAGE" -tg_api "$TG_API" -worker "$WORKER"
+# Sensitive variables should be passed at runtime via -e flag
+# ENV TOKEN="" and ENV GROUP_ID="" removed for security
+
+CMD ["sh", "-c", "python -u /app/main.py -token \"${TOKEN}\" -group_id \"${GROUP_ID}\" -language \"${LANGUAGE}\" -tg_api \"${TG_API}\" -worker \"${WORKER}\""]
