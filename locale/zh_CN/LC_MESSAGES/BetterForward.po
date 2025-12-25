@@ -1024,3 +1024,218 @@ msgstr "垃圾检测器{}出错：{}"
 #: src/utils/spam_detector_manager.py:118
 msgid "All spam detectors cleared"
 msgstr "已清除所有垃圾检测器"
+
+# ========== Verification Enhancement (2025-12-25) ==========
+
+#: src/handlers/message_handler.py:233
+#, python-brace-format
+msgid "User {} entered incorrect answer (attempt {}/3)"
+msgstr "用户{}输入错误答案（尝试次数：{}/3）"
+
+#: src/handlers/message_handler.py:245
+#, python-brace-format
+msgid "User {} auto-blocked after 3 failed attempts"
+msgstr "用户{}因3次验证失败被自动封禁"
+
+#: src/handlers/message_handler.py:257
+msgid "❌ You have been blocked after 3 failed verification attempts.\n\nIf you believe this is a mistake, you can submit an appeal (one-time opportunity)."
+msgstr "❌ 您因3次验证失败已被封禁。\n\n如果您认为这是误判，可以提交申诉（仅有一次机会）。"
+
+#: src/handlers/message_handler.py:271
+#, python-brace-format
+msgid "❌ Incorrect answer ({}/3 attempts).\n\nPlease try again:\n{}"
+msgstr "❌ 答案错误（{}/3次尝试）。\n\n请重新尝试：\n{}"
+
+#: src/handlers/message_handler.py:280
+msgid "✅ Verification successful! You can now send messages."
+msgstr "✅ 验证成功！您现在可以发送消息了。"
+
+#: src/handlers/message_handler.py:293
+#, python-brace-format
+msgid "User {} rate limited for captcha requests"
+msgstr "用户{}的验证码请求被频率限制"
+
+#: src/handlers/message_handler.py:312
+msgid "Please solve the following math problem and send the answer:\n\n"
+msgstr "请解答以下数学题并发送答案：\n\n"
+
+#: src/utils/captcha.py:206
+msgid "Please enter the 4 digits shown in the image:"
+msgstr "请输入图片中显示的4位数字："
+
+#: src/handlers/callback_handler.py:90
+msgid "Your appeal is already pending review"
+msgstr "您的申诉正在等待审核"
+
+#: src/handlers/callback_handler.py:93
+msgid "Your appeal was already approved"
+msgstr "您的申诉已被批准"
+
+#: src/handlers/callback_handler.py:96
+msgid "Your appeal was already rejected. No further appeals allowed."
+msgstr "您的申诉已被拒绝。不允许再次申诉。"
+
+#: src/handlers/callback_handler.py:106
+msgid "You are not blocked"
+msgstr "您未被封禁"
+
+#: src/handlers/callback_handler.py:118
+msgid "Appeal submitted"
+msgstr "申诉已提交"
+
+#: src/handlers/callback_handler.py:120
+msgid "✅ Your appeal has been submitted and is pending admin review.\n\nYou will be notified once a decision is made."
+msgstr "✅ 您的申诉已提交，正在等待管理员审核。\n\n决定做出后您将收到通知。"
+
+#: src/handlers/callback_handler.py:147
+msgid "✅ Your appeal has been automatically approved.\n\n⚠️ Note: If you fail verification again, you will be permanently blocked."
+msgstr "✅ 您的申诉已自动批准。\n\n⚠️ 注意：如果再次验证失败，您将被永久封禁。"
+
+#: src/handlers/callback_handler.py:153
+#, python-brace-format
+msgid "🔔 Auto-Appeal Notification\n\nUser: {} (ID: {})\nUsername: @{}\nStatus: ✅ Automatically approved\n\n⚠️ User is now on watch. Next violation will result in permanent block."
+msgstr "🔔 自动申诉通知\n\n用户：{}（ID：{}）\n用户名：@{}\n状态：✅ 自动批准\n\n⚠️ 用户现已处于观察期。再次违规将被永久封禁。"
+
+#: src/handlers/callback_handler.py:166
+msgid "✅ Approve"
+msgstr "✅ 批准"
+
+#: src/handlers/callback_handler.py:170
+msgid "❌ Reject"
+msgstr "❌ 拒绝"
+
+#: src/handlers/callback_handler.py:177
+#, python-brace-format
+msgid "🔔 New Appeal Request\n\nUser: {} (ID: {})\nUsername: @{}\nReason: Auto-blocked after 3 failed verification attempts\n\nPlease review and decide:"
+msgstr "🔔 新申诉请求\n\n用户：{}（ID：{}）\n用户名：@{}\n原因：3次验证失败后自动封禁\n\n请审核并决定："
+
+#: src/handlers/callback_handler.py:352
+msgid "✅ Good news! Your appeal has been approved by an administrator.\n\nYou can now send messages again. Please complete the verification process."
+msgstr "✅ 好消息！您的申诉已被管理员批准。\n\n您现在可以再次发送消息。请完成验证流程。"
+
+#: src/handlers/callback_handler.py:358
+#, python-brace-format
+msgid "✅ Appeal Approved\n\nUser ID: {}\nApproved by: {} (ID: {})\nAction: User unblocked and verification attempts reset"
+msgstr "✅ 申诉已批准\n\n用户ID：{}\n批准人：{}（ID：{}）\n操作：用户已解封，验证尝试次数已重置"
+
+#: src/handlers/callback_handler.py:390
+msgid "❌ Your appeal has been reviewed and rejected by an administrator.\n\nThe block remains in effect. No further appeals are allowed."
+msgstr "❌ 您的申诉已被管理员审核并拒绝。\n\n封禁仍然有效。不允许再次申诉。"
+
+#: src/handlers/callback_handler.py:396
+#, python-brace-format
+msgid "❌ Appeal Rejected\n\nUser ID: {}\nRejected by: {} (ID: {})\nAction: User remains blocked"
+msgstr "❌ 申诉已拒绝\n\n用户ID：{}\n拒绝人：{}（ID：{}）\n操作：用户仍被封禁"
+
+#: src/handlers/admin_handler.py:66
+msgid "📝 Appeal Management"
+msgstr "📝 申诉管理"
+
+#: src/handlers/admin_handler.py:1150
+#, python-brace-format
+msgid "📋 View Pending Appeals ({})"
+msgstr "📋 查看待处理申诉（{}）"
+
+#: src/handlers/admin_handler.py:1154
+msgid "📊 View All Appeals"
+msgstr "📊 查看所有申诉"
+
+#: src/handlers/admin_handler.py:1158
+#, python-brace-format
+msgid "Current Mode: {}"
+msgstr "当前模式：{}"
+
+#: src/handlers/admin_handler.py:1147
+msgid "🔧 Manual Review"
+msgstr "🔧 手动审核"
+
+#: src/handlers/admin_handler.py:1147
+msgid "🤖 Auto-Approve"
+msgstr "🤖 自动批准"
+
+#: src/handlers/admin_handler.py:1167
+msgid "📝 Appeal Management\n\n🔧 Manual Review: Admins must approve/reject each appeal\n🤖 Auto-Approve: Appeals are automatically approved, but users remain under watch\n\nClick buttons below to manage:"
+msgstr "📝 申诉管理\n\n🔧 手动审核：管理员必须逐个批准/拒绝申诉\n🤖 自动批准：申诉自动批准，但用户仍处于观察期\n\n点击下方按钮进行管理："
+
+#: src/handlers/admin_handler.py:1200
+msgid "✅ No pending appeals"
+msgstr "✅ 无待处理申诉"
+
+#: src/handlers/admin_handler.py:1207
+msgid "📋 Pending Appeals:\n\n"
+msgstr "📋 待处理申诉：\n\n"
+
+#: src/handlers/admin_handler.py:1248
+msgid "📊 Appeal Statistics\n\n⏳ Pending: {}\n✅ Approved: {}\n❌ Rejected: {}\n📈 Total: {}\n\nRecent Appeals:\n"
+msgstr "📊 申诉统计\n\n⏳ 待处理：{}\n✅ 已批准：{}\n❌ 已拒绝：{}\n📈 总计：{}\n\n最近的申诉：\n"
+
+#: src/handlers/admin_handler.py:1286
+#, python-brace-format
+msgid "✅ Appeal mode changed to: {}"
+msgstr "✅ 申诉模式已更改为：{}"
+
+#: src/handlers/callback_handler.py:73
+msgid "Invalid user ID"
+msgstr "无效的用户ID"
+
+#: src/handlers/callback_handler.py:185
+#, python-brace-format
+msgid "Appeal request submitted by user {}"
+msgstr "用户{}提交了申诉请求"
+
+#: src/handlers/callback_handler.py:368
+#, python-brace-format
+msgid "Appeal approved for user {} by admin {}"
+msgstr "管理员{}批准了用户{}的申诉"
+
+#: src/handlers/callback_handler.py:406
+#, python-brace-format
+msgid "Appeal rejected for user {} by admin {}"
+msgstr "管理员{}拒绝了用户{}的申诉"
+
+#: src/handlers/admin_handler.py:1162
+msgid "⬅️ Back"
+msgstr "⬅️ 返回"
+
+msgid "Appeal"
+msgstr "申诉"
+
+msgid "Image Captcha"
+msgstr "图片验证码"
+
+msgid "Disable Captcha"
+msgstr "禁用验证码"
+
+msgid "Math Captcha"
+msgstr "数学验证码"
+
+msgid "Button Captcha"
+msgstr "按钮验证码"
+
+msgid "(Selected) "
+msgstr "（已选）"
+
+msgid "Captcha Settings"
+msgstr "验证码设置"
+
+msgid "Appeal Management"
+msgstr "申诉管理"
+
+msgid "Please complete verification to submit appeal"
+msgstr "请完成验证以提交申诉"
+
+msgid "🔐 Appeal Verification Required\n\nTo submit your appeal, please complete the verification challenge below."
+msgstr "🔐 需要申诉验证\n\n要提交您的申诉，请完成下方的验证挑战。"
+
+msgid "🔐 Appeal Verification Required\n\nTo submit your appeal, please solve the following math problem and send the answer:\n\n"
+msgstr "🔐 需要申诉验证\n\n要提交您的申诉，请解决以下数学题并发送答案：\n\n"
+
+#, python-brace-format
+msgid "User {} passed appeal verification"
+msgstr "用户 {} 通过了申诉验证"
+
+msgid "❌ Incorrect answer. Appeal verification failed.\n\nPlease try again by clicking the Appeal button."
+msgstr "❌ 答案错误。申诉验证失败。\n\n请点击申诉按钮重试。"
+
+msgid "❌ Your account has been blocked. If you believe this is a mistake, you can submit an appeal (one-time opportunity)."
+msgstr "❌ 您的账户已被封禁。如果您认为这是误判，可以提交申诉（仅有一次机会）。"

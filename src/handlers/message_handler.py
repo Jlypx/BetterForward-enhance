@@ -223,38 +223,143 @@ class MessageHandler:
         if self.cache.get("setting_captcha") == "disable":
             return True
 
-        # Captcha Handler
-        if (captcha := self.cache.get(f"captcha_{message.from_user.id}")) is not None:
-            if not self.captcha_manager.verify_captcha(message.from_user.id, message.text):
-                logger.info(_("User {} entered an incorrect answer").format(message.from_user.id))
-                self.bot.send_message(message.chat.id, _("The answer is incorrect, please try again"),
-                                      reply_to_message_id=message.message_id)
+        user_id = message.from_user.id
+
+        # FIRST: Check if user is blocked - if so, don't generate any captcha
+        is_blocked = cursor.execute(
+            "SELECT 1 FROM blocked_users WHERE user_id = ? LIMIT 1",
+            (user_id,)
+        ).fetchone() is not None
+
+        if is_blocked:
+            # Check if user is in appeal verification mode
+            appeal_verification = self.cache.get(f"appeal_verification_{user_id}")
+            if appeal_verification:
+                # User is answering appeal verification captcha
+                if self.captcha_manager.verify_captcha(user_id, message.text):
+                    # Correct answer - proceed with appeal submission
+                    logger.info(_("User {} passed appeal verification").format(user_id))
+                    self.cache.delete(f"appeal_verification_{user_id}")
+                    self.cache.delete(f"captcha_{user_id}")
+
+                    # Submit appeal
+                    self._submit_appeal(user_id, message.from_user, db, cursor)
+                    return False
+                else:
+                    # Wrong answer
+                    self.bot.send_message(
+                        message.chat.id,
+                        _("❌ Incorrect answer. Appeal verification failed.\n\n"
+                          "Please try again by clicking the Appeal button."),
+                        reply_to_message_id=message.message_id
+                    )
+                    self.cache.delete(f"appeal_verification_{user_id}")
+                    self.cache.delete(f"captcha_{user_id}")
+                    return False
+            else:
+                # User is blocked, send message with appeal button
+                import json
+                from telebot import types
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton(
+                    _("Appeal"),
+                    callback_data=json.dumps({"action": "appeal_request", "user_id": user_id})
+                ))
+                self.bot.send_message(
+                    message.chat.id,
+                    _("❌ Your account has been blocked. If you believe this is a mistake, you can submit an appeal (one-time opportunity)."),
+                    reply_markup=markup
+                )
                 return False
-            logger.info(_("User {} passed the captcha").format(message.from_user.id))
-            self.bot.send_message(message.chat.id, _("Verification successful, you can now send messages"))
-            self.captcha_manager.set_user_verified(message.from_user.id, db)
-            self.cache.delete(f"captcha_{message.from_user.id}")
+
+        # Captcha Handler - User is answering a captcha
+        if (captcha := self.cache.get(f"captcha_{user_id}")) is not None:
+            if not self.captcha_manager.verify_captcha(user_id, message.text):
+                # Wrong answer - record attempt
+                attempt_count = self.captcha_manager.record_attempt(user_id, db)
+                logger.info(_("User {} entered incorrect answer (attempt {}/3)").format(user_id, attempt_count))
+
+                # Check if user has exceeded max attempts
+                if attempt_count >= 3:
+                    # Auto-block user
+                    self.captcha_manager.block_user_by_attempts(
+                        user_id,
+                        message.from_user.username,
+                        message.from_user.first_name,
+                        message.from_user.last_name,
+                        db
+                    )
+                    logger.warning(_("User {} auto-blocked after 3 failed attempts").format(user_id))
+
+                    # Send notification with appeal button
+                    import json
+                    from telebot import types
+                    markup = types.InlineKeyboardMarkup()
+                    markup.add(types.InlineKeyboardButton(
+                        _("Appeal"),
+                        callback_data=json.dumps({"action": "appeal_request", "user_id": user_id})
+                    ))
+                    self.bot.send_message(
+                        user_id,
+                        _("❌ You have been blocked after 3 failed verification attempts.\n\n"
+                          "If you believe this is a mistake, you can submit an appeal (one-time opportunity)."),
+                        reply_markup=markup
+                    )
+                    self.cache.delete(f"captcha_{user_id}")
+                    return False
+
+                # Generate new captcha (don't reuse the same one)
+                captcha_type = self.cache.get("setting_captcha")
+                new_captcha = self.captcha_manager.generate_captcha(user_id, captcha_type)
+
+                if new_captcha:  # For math/image captcha
+                    self.bot.send_message(
+                        message.chat.id,
+                        _("❌ Incorrect answer ({}/3 attempts).\n\nPlease try again:\n{}").format(
+                            attempt_count, new_captcha
+                        ),
+                        reply_to_message_id=message.message_id
+                    )
+                return False
+
+            # Correct answer - verify user
+            logger.info(_("User {} passed the captcha").format(user_id))
+            self.bot.send_message(message.chat.id, _("✅ Verification successful! You can now send messages."))
+            self.captcha_manager.set_user_verified(user_id, db)
+            self.captcha_manager.reset_attempts(user_id, db)  # Reset attempt counter
+            self.cache.delete(f"captcha_{user_id}")
             return False
 
         # Check if the user is verified
-        if not self.captcha_manager.is_user_verified(message.from_user.id, db):
-            logger.info(_("User {} is not verified").format(message.from_user.id))
-            
+        if not self.captcha_manager.is_user_verified(user_id, db):
+            logger.info(_("User {} is not verified").format(user_id))
+
+            # Rate limiting - prevent spam verification requests
+            rate_limit_key = f"captcha_rate_limit_{user_id}"
+            if self.cache.get(rate_limit_key):
+                logger.info(_("User {} rate limited for captcha requests").format(user_id))
+                return False
+
+            # Set rate limit (10 seconds)
+            self.cache.set(rate_limit_key, True, 10)
+
             # First, reply to user's message to make it clear the message was not sent
             self.bot.send_message(message.chat.id,
                                   _("⚠️ Your message was not sent. Please complete verification first."),
                                   reply_to_message_id=message.message_id)
-            
-            match self.cache.get("setting_captcha"):
+
+            captcha_type = self.cache.get("setting_captcha")
+            match captcha_type:
                 case "button":
-                    self.captcha_manager.generate_captcha(message.from_user.id,
-                                                          self.cache.get("setting_captcha"))
+                    self.captcha_manager.generate_captcha(user_id, captcha_type)
                     return False
                 case "math":
-                    captcha = self.captcha_manager.generate_captcha(message.from_user.id,
-                                                                    self.cache.get("setting_captcha"))
+                    captcha = self.captcha_manager.generate_captcha(user_id, captcha_type)
                     self.bot.send_message(message.chat.id,
-                                          _("Captcha is enabled. Please solve the following question and send the result directly\n") + captcha)
+                                          _("Please solve the following math problem and send the answer:\n\n") + captcha)
+                    return False
+                case "image":
+                    self.captcha_manager.generate_captcha(user_id, captcha_type)
                     return False
                 case _:
                     logger.error(_("Invalid captcha setting"))
@@ -262,6 +367,103 @@ class MessageHandler:
                                           _("Invalid captcha setting") + f": {self.cache.get('setting_captcha')}")
                     return False
         return True
+
+    def _submit_appeal(self, user_id: int, user, db, cursor):
+        """Submit an appeal request after successful verification."""
+        import json
+        from telebot import types
+
+        # Check if user has already appealed
+        existing_appeal = cursor.execute(
+            "SELECT status FROM appeal_requests WHERE user_id = ?",
+            (user_id,)
+        ).fetchone()
+
+        if existing_appeal:
+            status = existing_appeal[0]
+            if status == 'pending':
+                self.bot.send_message(user_id, _("Your appeal is already pending review"))
+                return
+            elif status == 'approved':
+                self.bot.send_message(user_id, _("Your appeal was already approved"))
+                return
+            elif status == 'rejected':
+                self.bot.send_message(user_id, _("Your appeal was already rejected. No further appeals allowed."))
+                return
+
+        # Record appeal request
+        cursor.execute(
+            """INSERT INTO appeal_requests (user_id, appeal_time, status)
+               VALUES (?, CURRENT_TIMESTAMP, 'pending')""",
+            (user_id,)
+        )
+        db.commit()
+
+        # Notify user
+        self.bot.send_message(
+            user_id,
+            _("✅ Your appeal has been submitted and is pending admin review.\n\n"
+              "You will be notified once a decision is made.")
+        )
+
+        # Get user info
+        username = user.username or "N/A"
+        first_name = user.first_name or ""
+        last_name = user.last_name or ""
+        full_name = f"{first_name} {last_name}".strip() or "N/A"
+
+        appeal_mode = self.cache.get("setting_appeal_mode") or "manual"
+
+        if appeal_mode == "auto":
+            # Auto-approve: unblock user immediately but mark as "on watch"
+            cursor.execute("DELETE FROM blocked_users WHERE user_id = ?", (user_id,))
+            cursor.execute(
+                """UPDATE appeal_requests
+                   SET status = 'approved', handled_at = CURRENT_TIMESTAMP
+                   WHERE user_id = ?""",
+                (user_id,)
+            )
+            db.commit()
+
+            self.bot.send_message(
+                user_id,
+                _("✅ Your appeal has been automatically approved.\n\n"
+                  "⚠️ Note: If you fail verification again, you will be permanently blocked.")
+            )
+
+            self.bot.send_message(
+                self.group_id,
+                _("🔔 Auto-Appeal Notification\n\n"
+                  "User: {} (ID: {})\n"
+                  "Username: @{}\n"
+                  "Status: ✅ Automatically approved\n\n"
+                  "⚠️ User is now on watch. Next violation will result in permanent block.").format(
+                    full_name, user_id, username
+                )
+            )
+        else:
+            # Manual mode: send to admin for approval
+            markup = types.InlineKeyboardMarkup()
+            markup.row(
+                types.InlineKeyboardButton(
+                    _("✅ Approve"),
+                    callback_data=json.dumps({"action": "approve_appeal", "user_id": user_id})
+                ),
+                types.InlineKeyboardButton(
+                    _("❌ Reject"),
+                    callback_data=json.dumps({"action": "reject_appeal", "user_id": user_id})
+                )
+            )
+
+            self.bot.send_message(
+                self.group_id,
+                _("🔔 New Appeal Request\n\n"
+                  "User: {} (ID: {})\n"
+                  "Username: @{}\n"
+                  "Reason: Auto-blocked after 3 failed verification attempts\n\n"
+                  "Please review and decide:").format(full_name, user_id, username),
+                reply_markup=markup
+            )
 
     def _handle_auto_response(self, message: Message):
         """Handle automatic responses."""

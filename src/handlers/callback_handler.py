@@ -40,6 +40,10 @@ class CallbackHandler:
             self._handle_verify_button(call, data)
             return
 
+        if action == "appeal_request":
+            self._handle_appeal_request(call, data)
+            return
+
         # Admin end callbacks
         if call.message.chat.id != self.group_id:
             return
@@ -54,12 +58,98 @@ class CallbackHandler:
             db_path = "./data/storage.db"
             with sqlite3.connect(db_path) as db:
                 self.captcha_manager.set_user_verified(user_id, db)
+                self.captcha_manager.reset_attempts(user_id, db)  # Reset attempts on manual verification
             self.bot.answer_callback_query(call.id)
             self.bot.send_message(user_id, _("Verification successful, you can now send messages"))
             self.bot.delete_message(call.message.chat.id, call.message.message_id)
         else:
             self.bot.answer_callback_query(call.id)
             self.bot.send_message(call.message.chat.id, _("Invalid user ID"))
+
+    def _handle_appeal_request(self, call: types.CallbackQuery, data: dict):
+        """Handle user appeal request after being auto-blocked. Requires verification first."""
+        user_id = data.get("user_id")
+        if not user_id:
+            self.bot.answer_callback_query(call.id, _("Invalid user ID"))
+            return
+
+        import sqlite3
+
+        with sqlite3.connect(self.db_path) as db:
+            cursor = db.cursor()
+
+            # Check if user has already appealed
+            existing_appeal = cursor.execute(
+                "SELECT status FROM appeal_requests WHERE user_id = ?",
+                (user_id,)
+            ).fetchone()
+
+            if existing_appeal:
+                status = existing_appeal[0]
+                if status == 'pending':
+                    self.bot.answer_callback_query(call.id, _("Your appeal is already pending review"))
+                    return
+                elif status == 'approved':
+                    self.bot.answer_callback_query(call.id, _("Your appeal was already approved"))
+                    return
+                elif status == 'rejected':
+                    self.bot.answer_callback_query(call.id, _("Your appeal was already rejected. No further appeals allowed."))
+                    return
+
+            # Check if user is actually blocked
+            is_blocked = cursor.execute(
+                "SELECT block_reason FROM blocked_users WHERE user_id = ?",
+                (user_id,)
+            ).fetchone()
+
+            if not is_blocked:
+                self.bot.answer_callback_query(call.id, _("You are not blocked"))
+                return
+
+            # Set appeal verification mode flag
+            self.admin_handler.cache.set(f"appeal_verification_{user_id}", True, 300)  # 5 minutes timeout
+
+            # Generate captcha challenge based on current settings
+            captcha_type = self.admin_handler.cache.get("setting_captcha") or "math"
+            from src.utils.captcha import CaptchaManager
+            captcha_manager = CaptchaManager(self.bot, self.admin_handler.cache)  # Fixed: bot first, cache second
+
+            # Generate the captcha
+            self.bot.answer_callback_query(call.id, _("Please complete verification to submit appeal"))
+
+            match captcha_type:
+                case "button":
+                    captcha_manager.generate_captcha(user_id, captcha_type)
+                    self.bot.send_message(
+                        user_id,
+                        _("🔐 Appeal Verification Required\n\n"
+                          "To submit your appeal, please complete the verification challenge below.")
+                    )
+                case "math":
+                    captcha = captcha_manager.generate_captcha(user_id, captcha_type)
+                    self.bot.send_message(
+                        user_id,
+                        _("🔐 Appeal Verification Required\n\n"
+                          "To submit your appeal, please solve the following math problem and send the answer:\n\n") + captcha
+                    )
+                case "image":
+                    captcha_manager.generate_captcha(user_id, captcha_type)
+                    self.bot.send_message(
+                        user_id,
+                        _("🔐 Appeal Verification Required\n\n"
+                          "To submit your appeal, please complete the verification challenge below.")
+                    )
+                case _:
+                    # Default to math if setting is invalid
+                    captcha = captcha_manager.generate_captcha(user_id, "math")
+                    self.bot.send_message(
+                        user_id,
+                        _("🔐 Appeal Verification Required\n\n"
+                          "To submit your appeal, please solve the following math problem and send the answer:\n\n") + captcha
+                    )
+
+
+            logger.info(_("Appeal request submitted by user {}").format(user_id))
 
     def _handle_admin_callback(self, call: types.CallbackQuery, action: str, data: dict):
         """Handle admin callbacks."""
@@ -185,5 +275,108 @@ class CallbackHandler:
                 self.admin_handler.confirm_reset_spam_topic(call.message)
             case "show_host_ip":
                 self.admin_handler.show_host_ip(call.message)
+            case "approve_appeal":
+                if "user_id" not in data:
+                    self.bot.delete_message(self.group_id, call.message.message_id)
+                    self.bot.send_message(self.group_id, _("Invalid action"), reply_markup=markup)
+                    return
+                self._handle_approve_appeal(call, data["user_id"])
+            case "reject_appeal":
+                if "user_id" not in data:
+                    self.bot.delete_message(self.group_id, call.message.message_id)
+                    self.bot.send_message(self.group_id, _("Invalid action"), reply_markup=markup)
+                    return
+                self._handle_reject_appeal(call, data["user_id"])
+            case "appeal_management":
+                self.admin_handler.appeal_management_menu(call.message)
+            case "view_pending_appeals":
+                self.admin_handler.view_pending_appeals(call.message)
+            case "view_all_appeals":
+                self.admin_handler.view_all_appeals(call.message)
+            case "toggle_appeal_mode":
+                self.admin_handler.toggle_appeal_mode(call.message)
             case _:
                 logger.error(_("Invalid action received") + action)
+
+    def _handle_approve_appeal(self, call: types.CallbackQuery, user_id: int):
+        """Handle admin approval of user appeal."""
+        import sqlite3
+
+        with sqlite3.connect(self.db_path) as db:
+            cursor = db.cursor()
+
+            # Update appeal status
+            cursor.execute(
+                """UPDATE appeal_requests
+                   SET status = 'approved', admin_id = ?, handled_at = CURRENT_TIMESTAMP
+                   WHERE user_id = ?""",
+                (call.from_user.id, user_id)
+            )
+
+            # Unblock user
+            cursor.execute("DELETE FROM blocked_users WHERE user_id = ?", (user_id,))
+
+            # Reset verification attempts
+            cursor.execute("DELETE FROM verification_attempts WHERE user_id = ?", (user_id,))
+
+            db.commit()
+
+            # Notify user
+            self.bot.send_message(
+                user_id,
+                _("✅ Good news! Your appeal has been approved by an administrator.\n\n"
+                  "You can now send messages again. Please complete the verification process.")
+            )
+
+            # Update admin message
+            self.bot.edit_message_text(
+                _("✅ Appeal Approved\n\n"
+                  "User ID: {}\n"
+                  "Approved by: {} (ID: {})\n"
+                  "Action: User unblocked and verification attempts reset").format(
+                    user_id, call.from_user.first_name, call.from_user.id
+                ),
+                call.message.chat.id,
+                call.message.message_id
+            )
+
+            logger.info(_("Appeal approved for user {} by admin {}").format(user_id, call.from_user.id))
+
+    def _handle_reject_appeal(self, call: types.CallbackQuery, user_id: int):
+        """Handle admin rejection of user appeal."""
+        import sqlite3
+
+        with sqlite3.connect(self.db_path) as db:
+            cursor = db.cursor()
+
+            # Update appeal status
+            cursor.execute(
+                """UPDATE appeal_requests
+                   SET status = 'rejected', admin_id = ?, handled_at = CURRENT_TIMESTAMP
+                   WHERE user_id = ?""",
+                (call.from_user.id, user_id)
+            )
+
+            db.commit()
+
+            # Notify user
+            self.bot.send_message(
+                user_id,
+                _("❌ Your appeal has been reviewed and rejected by an administrator.\n\n"
+                  "The block remains in effect. No further appeals are allowed.")
+            )
+
+            # Update admin message
+            self.bot.edit_message_text(
+                _("❌ Appeal Rejected\n\n"
+                  "User ID: {}\n"
+                  "Rejected by: {} (ID: {})\n"
+                  "Action: User remains blocked").format(
+                    user_id, call.from_user.first_name, call.from_user.id
+                ),
+                call.message.chat.id,
+                call.message.message_id
+            )
+
+            logger.info(_("Appeal rejected for user {} by admin {}").format(user_id, call.from_user.id))
+

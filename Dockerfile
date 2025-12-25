@@ -5,8 +5,25 @@ WORKDIR /app
 COPY locale /app/locale
 COPY requirements.txt /tmp/requirements.txt
 
-RUN apk add --no-cache ca-certificates && \
-    update-ca-certificates
+# Install system dependencies for Pillow and CA certificates
+RUN apk add --no-cache \
+    ca-certificates \
+    jpeg-dev \
+    zlib-dev \
+    freetype-dev \
+    lcms2-dev \
+    openjpeg-dev \
+    tiff-dev \
+    tk-dev \
+    tcl-dev \
+    harfbuzz-dev \
+    fribidi-dev \
+    libimagequant-dev \
+    libxcb-dev \
+    libpng-dev \
+    gcc \
+    musl-dev \
+    && update-ca-certificates
 
 RUN pip install --no-cache-dir -r /tmp/requirements.txt \
     && rm -f /tmp/requirements.txt \

@@ -63,6 +63,8 @@ class AdminHandler:
                                        callback_data=json.dumps({"action": "blocked_reply_settings"})),
             types.InlineKeyboardButton("🔒" + _("Captcha Settings"),
                                        callback_data=json.dumps({"action": "captcha_settings"})),
+            types.InlineKeyboardButton("📝" + _("Appeal Management"),
+                                       callback_data=json.dumps({"action": "appeal_management"})),
             types.InlineKeyboardButton("🌍" + _("Time Zone Settings"),
                                        callback_data=json.dumps({"action": "time_zone_settings"})),
             types.InlineKeyboardButton("📢" + _("Broadcast Message"),
@@ -532,6 +534,7 @@ class AdminHandler:
             _("Disable Captcha"): "disable",
             _("Math Captcha"): "math",
             _("Button Captcha"): "button",
+            _("Image Captcha"): "image",
         }
         if not self.check_valid_chat(message):
             return
@@ -1126,3 +1129,164 @@ class AdminHandler:
             self.bot.edit_message_text(_("Failed to reset spam topic: {}").format(str(e)),
                                        message.chat.id, message.message_id,
                                        reply_markup=markup)
+
+    # ========== Appeal Management ==========
+
+    def appeal_management_menu(self, message: Message):
+        """Display appeal management menu."""
+        markup = types.InlineKeyboardMarkup()
+
+        # Get pending appeals count
+        with sqlite3.connect(self.db_path) as db:
+            cursor = db.cursor()
+            pending_count = cursor.execute(
+                "SELECT COUNT(*) FROM appeal_requests WHERE status = 'pending'"
+            ).fetchone()[0]
+
+        # Get current appeal mode
+        appeal_mode = self.cache.get("setting_appeal_mode") or "manual"
+        mode_text = _("🔧 Manual Review") if appeal_mode == "manual" else _("🤖 Auto-Approve")
+
+        markup.add(types.InlineKeyboardButton(
+            _("📋 View Pending Appeals ({})").format(pending_count),
+            callback_data=json.dumps({"action": "view_pending_appeals"})
+        ))
+        markup.add(types.InlineKeyboardButton(
+            _("📊 View All Appeals"),
+            callback_data=json.dumps({"action": "view_all_appeals"})
+        ))
+        markup.add(types.InlineKeyboardButton(
+            _("Current Mode: {}").format(mode_text),
+            callback_data=json.dumps({"action": "toggle_appeal_mode"})
+        ))
+        markup.add(types.InlineKeyboardButton(
+            "⬅️" + _("Back"),
+            callback_data=json.dumps({"action": "menu"})
+        ))
+
+        help_text = _(
+            "📝 Appeal Management\n\n"
+            "🔧 Manual Review: Admins must approve/reject each appeal\n"
+            "🤖 Auto-Approve: Appeals are automatically approved, but users remain under watch\n\n"
+            "Click buttons below to manage:"
+        )
+
+        self.bot.edit_message_text(
+            help_text,
+            message.chat.id,
+            message.message_id,
+            reply_markup=markup
+        )
+
+    def view_pending_appeals(self, message: Message):
+        """Display list of pending appeals."""
+        with sqlite3.connect(self.db_path) as db:
+            cursor = db.cursor()
+            appeals = cursor.execute(
+                """SELECT ar.user_id, ar.appeal_time, bu.username, bu.first_name, bu.last_name
+                   FROM appeal_requests ar
+                   JOIN blocked_users bu ON ar.user_id = bu.user_id
+                   WHERE ar.status = 'pending'
+                   ORDER BY ar.appeal_time DESC
+                   LIMIT 10"""
+            ).fetchall()
+
+        if not appeals:
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton(
+                "⬅️" + _("Back"),
+                callback_data=json.dumps({"action": "appeal_management"})
+            ))
+            self.bot.edit_message_text(
+                _("✅ No pending appeals"),
+                message.chat.id,
+                message.message_id,
+                reply_markup=markup
+            )
+            return
+
+        text = _("📋 Pending Appeals:\n\n")
+        for user_id, appeal_time, username, first_name, last_name in appeals:
+            full_name = f"{first_name or ''} {last_name or ''}".strip() or "N/A"
+            username_str = f"@{username}" if username else "N/A"
+            text += f"👤 {full_name} (ID: {user_id})\n"
+            text += f"   Username: {username_str}\n"
+            text += f"   Time: {appeal_time}\n\n"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            "⬅️" + _("Back"),
+            callback_data=json.dumps({"action": "appeal_management"})
+        ))
+
+        self.bot.edit_message_text(text, message.chat.id, message.message_id, reply_markup=markup)
+
+    def view_all_appeals(self, message: Message):
+        """Display statistics of all appeals."""
+        with sqlite3.connect(self.db_path) as db:
+            cursor = db.cursor()
+
+            # Get counts by status
+            pending = cursor.execute(
+                "SELECT COUNT(*) FROM appeal_requests WHERE status = 'pending'"
+            ).fetchone()[0]
+            approved = cursor.execute(
+                "SELECT COUNT(*) FROM appeal_requests WHERE status = 'approved'"
+            ).fetchone()[0]
+            rejected = cursor.execute(
+                "SELECT COUNT(*) FROM appeal_requests WHERE status = 'rejected'"
+            ).fetchone()[0]
+
+            # Get recent appeals
+            recent = cursor.execute(
+                """SELECT user_id, status, appeal_time
+                   FROM appeal_requests
+                   ORDER BY appeal_time DESC
+                   LIMIT 5"""
+            ).fetchall()
+
+        text = _(
+            "📊 Appeal Statistics\n\n"
+            "⏳ Pending: {}\n"
+            "✅ Approved: {}\n"
+            "❌ Rejected: {}\n"
+            "📈 Total: {}\n\n"
+            "Recent Appeals:\n"
+        ).format(pending, approved, rejected, pending + approved + rejected)
+
+        for user_id, status, appeal_time in recent:
+            status_icon = {"pending": "⏳", "approved": "✅", "rejected": "❌"}.get(status, "❓")
+            text += f"{status_icon} User {user_id} - {appeal_time}\n"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            "⬅️" + _("Back"),
+            callback_data=json.dumps({"action": "appeal_management"})
+        ))
+
+        self.bot.edit_message_text(text, message.chat.id, message.message_id, reply_markup=markup)
+
+    def toggle_appeal_mode(self, message: Message):
+        """Toggle between manual and auto appeal mode."""
+        current_mode = self.cache.get("setting_appeal_mode") or "manual"
+        new_mode = "auto" if current_mode == "manual" else "manual"
+
+        # Update database and cache
+        self.database.set_setting("appeal_mode", new_mode)
+        self.cache.set("setting_appeal_mode", new_mode)
+
+        mode_text = _("🤖 Auto-Approve") if new_mode == "auto" else _("🔧 Manual Review")
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            "⬅️" + _("Back"),
+            callback_data=json.dumps({"action": "appeal_management"})
+        ))
+
+        self.bot.edit_message_text(
+            _("✅ Appeal mode changed to: {}").format(mode_text),
+            message.chat.id,
+            message.message_id,
+            reply_markup=markup
+        )
+
