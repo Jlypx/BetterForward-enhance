@@ -16,6 +16,8 @@
 
 ✅ 速率限制：尝试间隔10秒，超时300秒
 
+## usage
 
+把原项目的docker镜像名改为pokstay/betterforward-enhance即可，不过保险起见建议删除原来的data文件夹，因为对数据库的读写做了少许修改
 
 
