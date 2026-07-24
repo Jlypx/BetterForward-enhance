@@ -1,10 +1,13 @@
 """Main bot class for BetterForward."""
 
+import sqlite3
+from types import SimpleNamespace
+
 import pytz
 from diskcache import Cache
 from telebot import types, TeleBot
 
-from src.config import logger, _
+from src.config import args, logger, _
 from src.database import Database
 from src.handlers.admin_handler import AdminHandler
 from src.handlers.callback_handler import CallbackHandler
@@ -15,10 +18,22 @@ from src.utils.captcha import CaptchaManager
 from src.utils.message_queue import MessageQueueManager
 from src.utils.spam_detector_manager import SpamDetectorManager
 from src.utils.spam_detectors import KeywordSpamDetector
+from src.utils.webapp_verification import TurnstileWebAppService
 
 
 class TGBot:
     """Main Telegram bot class."""
+
+    TURNSTILE_SETTING_KEYS = {
+        "enabled": "webapp_enabled",
+        "public_url": "webapp_public_url",
+        "site_key": "turnstile_site_key",
+        "secret_key": "turnstile_secret_key",
+        "hostname": "turnstile_hostname",
+        "host": "webapp_host",
+        "port": "webapp_port",
+        "auth_max_age": "webapp_auth_max_age",
+    }
 
     def __init__(self, bot_token: str, group_id: str, db_path: str = "./data/storage.db",
                  num_workers: int = 5):
@@ -42,16 +57,22 @@ class TGBot:
 
         # Initialize cache
         self.cache = Cache()
+        self._cleanup_expired_rate_limit_blocks()
+        self._seed_webapp_settings_from_args()
 
         # Load settings into cache
         self.load_settings()
+
+        self.webapp_service = TurnstileWebAppService(
+            bot_token, self.cache, self._handle_webapp_verification)
 
         # Initialize timezone
         tz_str = self.cache.get("setting_time_zone")
         self.time_zone = pytz.timezone(tz_str) if tz_str else pytz.UTC
 
         # Initialize managers
-        self.captcha_manager = CaptchaManager(self.bot, self.cache)
+        self.captcha_manager = CaptchaManager(
+            self.bot, self.cache, webapp_service=self.webapp_service)
         self.auto_response_manager = AutoResponseManager(db_path, self.time_zone)
 
         # Initialize spam detection system
@@ -78,7 +99,8 @@ class TGBot:
         )
         self.callback_handler = CallbackHandler(
             self.bot, self.group_id, self.admin_handler,
-            self.command_handler, self.captcha_manager
+            self.command_handler, self.captcha_manager,
+            db_path=self.db_path,
         )
 
         # Register handlers
@@ -95,9 +117,35 @@ class TGBot:
 
         # Setup multi-threaded message queue
         self.message_queue_manager = MessageQueueManager(
-            handler_func=self.message_handler.handle_message,
-            num_workers=self.num_workers
+            handler_func=self._dispatch_message,
+            num_workers=self.num_workers,
+            queue_size=args.queue_size,
+            group_queue_size=args.group_queue_size,
+            per_user_queue_size=args.per_user_queue_size,
+            unverified_rate=args.unverified_rate,
+            unverified_burst=args.unverified_burst,
+            verified_rate=args.verified_rate,
+            verified_burst=args.verified_burst,
+            priority_rate=args.priority_rate,
+            priority_burst=args.priority_burst,
+            priority_inactivity_seconds=args.priority_inactivity_seconds,
+            global_rate=args.global_rate,
+            global_burst=args.global_burst,
+            abuse_block_threshold=args.abuse_block_threshold,
+            rate_limit_state_size=args.rate_limit_state_size,
+            is_user_verified=self._is_rate_limit_verified,
+            is_user_priority=self._is_rate_limit_priority,
+            touch_user_priority=self._touch_rate_limit_priority,
+            block_user=self._block_rate_limited_user,
+            redis_url=args.redis_url,
+            redis_prefix=args.redis_prefix,
         )
+
+        self.captcha_manager.priority_revoker = (
+            self.message_queue_manager.revoke_user_priority)
+        ok, error = self.webapp_service.reload(self.get_turnstile_settings())
+        if not ok:
+            logger.error("Turnstile WebApp could not start: %s", error)
 
         logger.info(_("Message queue initialized with {} workers").format(self.num_workers))
 
@@ -111,17 +159,16 @@ class TGBot:
 
     def _register_handlers(self):
         """Register all bot handlers."""
-        # Edited message handler
-        self.bot.edited_message_handler(func=lambda m: True)(self.command_handler.handle_edit)
+        # Edited messages must share the same bounded ingress queue.
+        self.bot.edited_message_handler(func=lambda m: True)(self.push_edited_message)
 
-        # Command handlers
-        self.bot.message_handler(commands=["start", "help"])(
-            lambda m: self.command_handler.help_command(m, self.admin_handler.menu))
-        self.bot.message_handler(commands=["ban"])(self.command_handler.ban_user)
-        self.bot.message_handler(commands=["unban"])(self.command_handler.unban_user)
-        self.bot.message_handler(commands=["terminate"])(self.command_handler.handle_terminate)
-        self.bot.message_handler(commands=["delete"])(self.command_handler.delete_message)
-        self.bot.message_handler(commands=["verify"])(self.command_handler.handle_verify)
+        # Commands are queued before dispatch so they cannot bypass private-message limits.
+        self.bot.message_handler(commands=["start", "help"])(self.push_messages)
+        self.bot.message_handler(commands=["ban"])(self.push_messages)
+        self.bot.message_handler(commands=["unban"])(self.push_messages)
+        self.bot.message_handler(commands=["terminate"])(self.push_messages)
+        self.bot.message_handler(commands=["delete"])(self.push_messages)
+        self.bot.message_handler(commands=["verify"])(self.push_messages)
 
         # Message handler (for all message types)
         self.bot.message_handler(
@@ -132,7 +179,7 @@ class TGBot:
 
         # Reaction handler
         self.bot.message_reaction_handler(func=lambda message: True)(
-            self.command_handler.handle_reaction)
+            self.push_reaction)
 
         # Callback query handler
         self.bot.callback_query_handler(func=lambda call: True)(
@@ -153,6 +200,105 @@ class TGBot:
             types.BotCommand("terminate", _("Terminate a thread")),
             types.BotCommand("verify", _("Set verified status")),
         ], scope=types.BotCommandScopeChat(self.group_id))
+
+    def _seed_webapp_settings_from_args(self):
+        """Persist environment/CLI defaults only before the first runtime setup."""
+        if self.database.get_setting("webapp_configured") == "yes":
+            return
+        provided = (
+            args.webapp_enabled == "enable"
+            or bool(args.webapp_public_url)
+            or bool(args.turnstile_site_key)
+            or bool(args.turnstile_secret_key)
+            or bool(args.turnstile_hostname)
+        )
+        if not provided:
+            return
+
+        enabled = args.webapp_enabled
+        if enabled == "enable" and not (
+                args.webapp_public_url
+                and args.turnstile_site_key
+                and args.turnstile_secret_key):
+            logger.warning(
+                "Incomplete initial Turnstile settings; WebApp remains disabled")
+            enabled = "disable"
+        initial = {
+            "webapp_enabled": enabled,
+            "webapp_public_url": args.webapp_public_url,
+            "turnstile_site_key": args.turnstile_site_key,
+            "turnstile_secret_key": args.turnstile_secret_key,
+            "turnstile_hostname": args.turnstile_hostname,
+            "webapp_host": args.webapp_host,
+            "webapp_port": str(args.webapp_port),
+            "webapp_auth_max_age": str(args.webapp_auth_max_age),
+            "webapp_configured": "yes",
+        }
+        for key, value in initial.items():
+            self.database.set_setting(key, str(value))
+
+    def get_turnstile_settings(self):
+        """Return persisted Turnstile settings in service-facing form."""
+        return {
+            field: self.cache.get(f"setting_{db_key}")
+            for field, db_key in self.TURNSTILE_SETTING_KEYS.items()
+        }
+
+    def update_turnstile_setting(self, field, value):
+        """Validate, apply, and persist one runtime WebApp setting."""
+        if field not in self.TURNSTILE_SETTING_KEYS:
+            return False, "Unknown Turnstile setting"
+        candidate = self.get_turnstile_settings()
+        candidate[field] = str(value).strip()
+        ok, error = self.webapp_service.reload(candidate)
+        if not ok:
+            return False, error
+
+        db_key = self.TURNSTILE_SETTING_KEYS[field]
+        self.database.set_setting(db_key, candidate[field])
+        self.database.set_setting("webapp_configured", "yes")
+        self.cache.set(f"setting_{db_key}", candidate[field])
+        self.cache.set("setting_webapp_configured", "yes")
+
+        if field == "enabled" and candidate[field] != "enable":
+            if self.cache.get("setting_captcha") == "webapp":
+                self.database.set_setting("captcha", "image")
+                self.cache.set("setting_captcha", "image")
+        return True, None
+
+    def _handle_webapp_verification(self, user_id, purpose, user_data):
+        """Apply a verified one-time WebApp challenge to its declared purpose."""
+        with sqlite3.connect(self.db_path) as db:
+            cursor = db.cursor()
+            blocked = cursor.execute(
+                """SELECT block_reason FROM blocked_users
+                   WHERE user_id = ?
+                     AND (blocked_until IS NULL OR blocked_until > CURRENT_TIMESTAMP)""",
+                (user_id,),
+            ).fetchone()
+
+            if purpose == "normal":
+                if blocked:
+                    return False, _("Your account is currently blocked")
+                self.captcha_manager.set_user_verified(user_id, db)
+                self.captcha_manager.reset_attempts(user_id, db)
+                self.bot.send_message(
+                    user_id, _("Verification successful, you can now send messages"))
+                return True, _("Verification successful")
+
+            if purpose == "appeal":
+                if not blocked:
+                    return False, _("Your account is not blocked")
+                user = SimpleNamespace(
+                    id=user_id,
+                    username=user_data.get("username"),
+                    first_name=user_data.get("first_name") or "",
+                    last_name=user_data.get("last_name") or "",
+                )
+                self.message_handler._submit_appeal(user_id, user, db, cursor)
+                return True, _("Appeal verification successful")
+
+        return False, _("Invalid verification purpose")
 
     def load_settings(self):
         """Load settings from database into cache."""
@@ -189,9 +335,6 @@ class TGBot:
 
         # Check and create spam topic if not exists
         self._ensure_spam_topic()
-
-        # Check and create blocked messages topic if not exists
-        self._ensure_blocked_topic()
 
         self.bot.send_message(self.group_id, _("Bot started successfully"))
 
@@ -322,6 +465,127 @@ class TGBot:
             logger.error(_("Failed to reset Blocked Messages topic: {}").format(str(e)))
             return False
 
+    def _dispatch_message(self, message):
+        """Dispatch a rate-limited update after it has left the ingress queue."""
+        if getattr(message, "content_type", None) == "text" and message.text:
+            command = message.text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+            command_handlers = {
+                "/ban": self.command_handler.ban_user,
+                "/unban": self.command_handler.unban_user,
+                "/terminate": self.command_handler.handle_terminate,
+                "/delete": self.command_handler.delete_message,
+                "/verify": self.command_handler.handle_verify,
+            }
+            if command in {"/start", "/help"}:
+                self.command_handler.help_command(message, self.admin_handler.menu)
+                return
+            if handler := command_handlers.get(command):
+                if (getattr(message.chat, "type", None) == "private"
+                        and not self.message_handler.can_process_private_action(message)):
+                    return
+                handler(message)
+                return
+        self.message_handler.handle_message(message)
+
+    def _dispatch_edited_message(self, message):
+        """Mirror edits only after the private sender still passes verification."""
+        if (getattr(message.chat, "type", None) == "private"
+                and not self.message_handler.can_process_private_action(message)):
+            return
+        self.command_handler.handle_edit(message)
+
+    def push_edited_message(self, message):
+        """Queue edits so they cannot bypass private-message limits."""
+        self.message_queue_manager.put(message, self._dispatch_edited_message)
+
+    def push_reaction(self, message):
+        """Queue reaction mirroring work with bounded group capacity."""
+        self.message_queue_manager.put(message, self.command_handler.handle_reaction)
+
+    def _cleanup_expired_rate_limit_blocks(self):
+        """Periodically remove expired automatic rate-limit blocks."""
+        cleanup_key = "rate_limit_block_cleanup"
+        if self.cache.get(cleanup_key):
+            return
+
+        db = self.database.get_connection()
+        try:
+            cursor = db.cursor()
+            cursor.execute(
+                """DELETE FROM blocked_users
+                   WHERE block_reason = 'rate_limit'
+                     AND blocked_until IS NOT NULL
+                     AND blocked_until <= CURRENT_TIMESTAMP"""
+            )
+            if cursor.rowcount:
+                logger.info("Removed %s expired rate-limit blocks", cursor.rowcount)
+        finally:
+            db.close()
+        self.cache.set(cleanup_key, True, 3600)
+
+    def _is_rate_limit_verified(self, user_id: int) -> bool:
+        """Use the cached verification state without database work on ingress."""
+        return self.cache.get(f"verified_{user_id}") is True
+
+    def _is_rate_limit_priority(self, user_id: int) -> bool:
+        """Return whether an admin-replied user is still inside the activity window."""
+        return self.cache.get(f"priority_user_{user_id}") is True
+
+    def _touch_rate_limit_priority(self, user_id: int):
+        """Extend priority while the replied user keeps the conversation active."""
+        key = f"priority_user_{user_id}"
+        if self.cache.get(key) is True:
+            self.cache.set(key, True, expire=args.priority_inactivity_seconds)
+
+    def mark_user_replied(self, user_id: int):
+        """Promote a verified user after an administrator successfully replies."""
+        self.cache.set(
+            f"priority_user_{user_id}", True,
+            expire=args.priority_inactivity_seconds,
+        )
+        self.message_queue_manager.mark_user_replied(user_id)
+        logger.info("User %s promoted to active conversation limits", user_id)
+
+    def _block_rate_limited_user(self, message):
+        """Temporarily block repeated ingress-rate-limit violators."""
+        if getattr(message.chat, "type", None) != "private":
+            return
+
+        self._cleanup_expired_rate_limit_blocks()
+        user = message.from_user
+        db = self.database.get_connection()
+        try:
+            cursor = db.cursor()
+            existing = cursor.execute(
+                "SELECT blocked_until FROM blocked_users WHERE user_id = ?",
+                (user.id,)
+            ).fetchone()
+            permanent_block = existing and existing[0] is None
+            cursor.execute(
+                "DELETE FROM verified_users WHERE user_id = ?", (user.id,))
+            if not permanent_block:
+                cursor.execute(
+                    """INSERT INTO blocked_users
+                       (user_id, username, first_name, last_name, block_reason, blocked_at, blocked_until)
+                       VALUES (?, ?, ?, ?, 'rate_limit', CURRENT_TIMESTAMP,
+                               datetime('now', '+' || ? || ' seconds'))
+                       ON CONFLICT(user_id) DO UPDATE SET
+                           username = excluded.username,
+                           first_name = excluded.first_name,
+                           last_name = excluded.last_name,
+                           block_reason = 'rate_limit',
+                           blocked_at = CURRENT_TIMESTAMP,
+                           blocked_until = excluded.blocked_until
+                       WHERE blocked_users.blocked_until IS NOT NULL""",
+                    (user.id, user.username, user.first_name, user.last_name,
+                     args.abuse_block_seconds),
+                )
+        finally:
+            db.close()
+        self.cache.delete(f"verified_{user.id}")
+        self.cache.delete(f"priority_user_{user.id}")
+        self.message_queue_manager.revoke_user_priority(user.id)
+
     def push_messages(self, message):
         """Push messages to the queue for processing."""
         self.message_queue_manager.put(message)
@@ -333,6 +597,7 @@ class TGBot:
     def stop(self):
         """Stop the bot and cleanup resources."""
         logger.info(_("Stopping bot..."))
+        self.webapp_service.stop()
         self.message_queue_manager.stop()
         self.bot.stop_bot()
         logger.info(_("Bot stopped"))

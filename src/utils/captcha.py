@@ -1,6 +1,5 @@
 """Captcha functionality for BetterForward."""
 
-import json
 import os
 import random
 from datetime import datetime
@@ -16,11 +15,20 @@ from src.config import _ as gettext_
 class CaptchaManager:
     """Manages captcha generation and verification."""
 
-    def __init__(self, bot, cache: Cache):
+    def __init__(self, bot, cache: Cache, priority_revoker=None,
+                 webapp_service=None):
         self.bot = bot
         self.cache = cache
+        self.priority_revoker = priority_revoker
+        self.webapp_service = webapp_service
 
-    def generate_captcha(self, user_id: int, captcha_type: str = "math"):
+    def _revoke_priority(self, user_id: int):
+        self.cache.delete(f"priority_user_{user_id}")
+        if self.priority_revoker:
+            self.priority_revoker(user_id)
+
+    def generate_captcha(self, user_id: int, captcha_type: str = "math",
+                         purpose: str = "normal"):
         """Generate a captcha for the user."""
         match captcha_type:
             case "math":
@@ -29,14 +37,20 @@ class CaptchaManager:
                 answer = num1 + num2
                 self.cache.set(f"captcha_{user_id}", answer, 300)
                 return f"{num1} + {num2} = ?"
-            case "button":
+            case "webapp":
+                if not self.webapp_service or not self.webapp_service.is_enabled():
+                    raise RuntimeError("Turnstile WebApp is not enabled")
+                url = self.webapp_service.create_challenge(user_id, purpose)
                 markup = types.InlineKeyboardMarkup()
                 markup.add(types.InlineKeyboardButton(
-                    "Click to verify",
-                    callback_data=json.dumps({"action": "verify_button", "user_id": user_id})
+                    gettext_("Verify"),
+                    web_app=types.WebAppInfo(url=url),
                 ))
-                self.bot.send_message(user_id, gettext_("Please click the button to verify."),
-                                      reply_markup=markup)
+                self.bot.send_message(
+                    user_id,
+                    gettext_("Please complete human verification."),
+                    reply_markup=markup,
+                )
                 return None
             case "image":
                 return self._generate_image_captcha(user_id)
@@ -49,6 +63,10 @@ class CaptchaManager:
         if captcha is None:
             return False
         return str(answer) == str(captcha)
+
+    def is_webapp_pending(self, user_id: int) -> bool:
+        challenge = self.cache.get(f"captcha_{user_id}")
+        return isinstance(challenge, dict) and challenge.get("type") == "webapp"
 
     def is_user_verified(self, user_id: int, db) -> bool:
         """Check if a user is verified."""
@@ -74,8 +92,7 @@ class CaptchaManager:
         cursor.execute("DELETE FROM verified_users WHERE user_id = ?", (user_id,))
         db.commit()
         self.cache.delete(f"verified_{user_id}")
-
-    # ========== Verification Attempts Tracking ==========
+        self._revoke_priority(user_id)
 
     def record_attempt(self, user_id: int, db) -> int:
         """Record a failed verification attempt and return the current count."""
@@ -155,6 +172,7 @@ class CaptchaManager:
         # Remove verification status
         cursor.execute("DELETE FROM verified_users WHERE user_id = ?", (user_id,))
         self.cache.delete(f"verified_{user_id}")
+        self._revoke_priority(user_id)
 
         db.commit()
         return True

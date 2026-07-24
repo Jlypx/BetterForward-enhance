@@ -60,8 +60,13 @@ def test_database_migration():
             conn.commit()
 
         # Run migration
-        from db_migrate import migration_20251225_verification_enhancement
-        migration_20251225_verification_enhancement.upgrade(test_db)
+        import importlib
+        migration = importlib.import_module("db_migrate.20251225_verification_enhancement")
+        migration.upgrade(test_db)
+        rate_limit_migration = importlib.import_module("db_migrate.20251226_rate_limit_protection")
+        rate_limit_migration.upgrade(test_db)
+        webapp_migration = importlib.import_module("db_migrate.20251227_turnstile_webapp")
+        webapp_migration.upgrade(test_db)
 
         # Verify tables were created
         with sqlite3.connect(test_db) as conn:
@@ -82,11 +87,18 @@ def test_database_migration():
             columns = [col[1] for col in cursor.fetchall()]
             if 'block_reason' not in columns:
                 raise Exception("block_reason column not added")
+            if 'blocked_until' not in columns:
+                raise Exception("blocked_until column not added")
+            cursor.execute("SELECT value FROM settings WHERE key = 'webapp_enabled'")
+            if cursor.fetchone() != ('disable',):
+                raise Exception("webapp settings not added")
 
             print("✅ Database migration successful!")
             print("   - verification_attempts table created")
             print("   - appeal_requests table created")
             print("   - block_reason column added")
+            print("   - blocked_until column added")
+            print("   - persistent WebApp settings added")
 
         # Cleanup
         os.remove(test_db)

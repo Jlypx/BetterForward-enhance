@@ -78,8 +78,8 @@ class CommandHandler:
                     "INSERT OR REPLACE INTO blocked_users (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)",
                     (user_id, None, None, None)  # Will be updated when user sends next message
                 )
-                # Remove user from verified list
-                db_cursor.execute("DELETE FROM verified_users WHERE user_id = ?", (user_id,))
+                # Remove user from verified list and revoke any active priority tier.
+                self.captcha_manager.remove_user_verification(user_id, db)
                 db.commit()
             else:
                 self.bot.send_message(self.group_id, _("User not found"),

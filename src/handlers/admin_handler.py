@@ -5,6 +5,7 @@ import re
 import sqlite3
 import httpx
 from datetime import datetime
+from urllib.parse import urlsplit
 
 import pytz
 from telebot import types
@@ -63,6 +64,8 @@ class AdminHandler:
                                        callback_data=json.dumps({"action": "blocked_reply_settings"})),
             types.InlineKeyboardButton("🔒" + _("Captcha Settings"),
                                        callback_data=json.dumps({"action": "captcha_settings"})),
+            types.InlineKeyboardButton("🛡" + _("Turnstile WebApp"),
+                                       callback_data=json.dumps({"action": "turnstile_settings"})),
             types.InlineKeyboardButton("📝" + _("Appeal Management"),
                                        callback_data=json.dumps({"action": "appeal_management"})),
             types.InlineKeyboardButton("🌍" + _("Time Zone Settings"),
@@ -531,11 +534,11 @@ class AdminHandler:
     def captcha_settings_menu(self, message: Message):
         """Display captcha settings menu."""
         captcha_list = {
-            _("Disable Captcha"): "disable",
             _("Math Captcha"): "math",
-            _("Button Captcha"): "button",
             _("Image Captcha"): "image",
         }
+        if self.bot_instance and self.bot_instance.webapp_service.is_enabled():
+            captcha_list[_("Cloudflare Turnstile")] = "webapp"
         if not self.check_valid_chat(message):
             return
 
@@ -545,6 +548,9 @@ class AdminHandler:
             markup.add(types.InlineKeyboardButton(
                 icon + key,
                 callback_data=json.dumps({"action": "set_captcha", "value": value})))
+        markup.add(types.InlineKeyboardButton(
+            _("Configure Turnstile WebApp"),
+            callback_data=json.dumps({"action": "turnstile_settings"})))
         markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
                                               callback_data=json.dumps({"action": "menu"})))
         self.bot.send_message(text=_("Captcha Settings") + "\n",
@@ -554,6 +560,13 @@ class AdminHandler:
 
     def set_captcha(self, message: Message, value: str):
         """Set captcha setting."""
+        if value not in {"math", "image", "webapp"}:
+            logger.warning("Rejected invalid captcha setting: %s", value)
+            return
+        if (value == "webapp" and
+                (not self.bot_instance or not self.bot_instance.webapp_service.is_enabled())):
+            self.bot.send_message(message.chat.id, _("Turnstile WebApp is not enabled"))
+            return
         self.database.set_setting('captcha', value)
         self.cache.set("setting_captcha", value)
         markup = types.InlineKeyboardMarkup()
@@ -561,6 +574,149 @@ class AdminHandler:
                                               callback_data=json.dumps({"action": "menu"})))
         self.bot.edit_message_text(_("Captcha settings updated"),
                                    message.chat.id, message.message_id, reply_markup=markup)
+
+    def turnstile_settings_menu(self, message: Message):
+        """Display persistent runtime Turnstile WebApp settings."""
+        if not self.check_valid_chat(message) or not self.bot_instance:
+            return
+        settings = self.bot_instance.get_turnstile_settings()
+        running = self.bot_instance.webapp_service.is_enabled()
+        secret_status = _("Configured") if settings.get("secret_key") else _("Not configured")
+        site_key = settings.get("site_key") or _("Not configured")
+        if len(site_key) > 12:
+            site_key = site_key[:6] + "..." + site_key[-4:]
+
+        text = _("Turnstile WebApp Settings") + "\n\n"
+        text += f"{_('Status')}: {_('Running') if running else _('Disabled')}\n"
+        text += f"{_('Public URL')}: {settings.get('public_url') or _('Not configured')}\n"
+        text += f"{_('Site Key')}: {site_key}\n"
+        text += f"{_('Secret Key')}: {secret_status}\n"
+        text += f"{_('Expected hostname')}: {settings.get('hostname') or _('Not enforced')}\n"
+        text += f"{_('Listener')}: {settings.get('host')}:{settings.get('port')}\n"
+        text += f"{_('Telegram data max age')}: {settings.get('auth_max_age')}s"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            _("Disable") if running else _("Enable"),
+            callback_data=json.dumps({
+                "action": "set_turnstile_enabled",
+                "value": "disable" if running else "enable",
+            })))
+        labels = {
+            "public_url": _("Public URL"),
+            "site_key": _("Site Key"),
+            "secret_key": _("Secret Key"),
+            "hostname": _("Expected hostname"),
+            "host": _("Listen host"),
+            "port": _("Listen port"),
+            "auth_max_age": _("Telegram data max age"),
+        }
+        for field, label in labels.items():
+            markup.add(types.InlineKeyboardButton(
+                label,
+                callback_data=json.dumps({
+                    "action": "edit_turnstile_setting", "field": field,
+                })))
+        markup.add(types.InlineKeyboardButton(
+            "⬅️" + _("Back"), callback_data=json.dumps({"action": "menu"})))
+        self.bot.send_message(
+            message.chat.id, text, message_thread_id=None, reply_markup=markup)
+
+    def set_turnstile_enabled(self, message: Message, value: str):
+        """Enable or disable the persisted WebApp service immediately."""
+        if value not in {"enable", "disable"} or not self.bot_instance:
+            return
+        ok, error = self.bot_instance.update_turnstile_setting("enabled", value)
+        if ok:
+            self.bot.send_message(
+                message.chat.id,
+                _("Turnstile WebApp settings updated"),
+                message_thread_id=None,
+            )
+        else:
+            self.bot.send_message(
+                message.chat.id,
+                _("Turnstile WebApp update failed") + f": {error}",
+                message_thread_id=None,
+            )
+
+    def edit_turnstile_setting(self, message: Message, field: str):
+        """Prompt for one runtime WebApp setting."""
+        prompts = {
+            "public_url": _("Send the public HTTPS WebApp URL without query parameters."),
+            "site_key": _("Send the Cloudflare Turnstile Site Key."),
+            "secret_key": _("Send the Cloudflare Turnstile Secret Key. The message will be deleted."),
+            "hostname": _("Send the expected Turnstile hostname, or - to disable hostname enforcement."),
+            "host": _("Send the local listen host, for example 0.0.0.0."),
+            "port": _("Send the local listen port (1-65535)."),
+            "auth_max_age": _("Send the maximum Telegram authorization age in seconds (30-3600)."),
+        }
+        if field not in prompts or not self.check_valid_chat(message):
+            return
+        prompt = self.bot.send_message(
+            self.group_id,
+            prompts[field] + "\n" + _("Send /cancel to cancel this operation."),
+            message_thread_id=None,
+        )
+        self.bot.register_next_step_handler(
+            prompt, self.process_turnstile_setting, field)
+
+    def process_turnstile_setting(self, message: Message, field: str):
+        """Validate, persist, and hot-reload one WebApp setting."""
+        if not self.check_valid_chat(message) or not isinstance(message.text, str):
+            return
+        if message.text.startswith("/cancel"):
+            self.bot.send_message(self.group_id, _("Operation cancelled"))
+            return
+
+        value = message.text.strip()
+        if field == "secret_key":
+            try:
+                self.bot.delete_message(message.chat.id, message.message_id)
+            except Exception:
+                pass
+        error = self._validate_turnstile_setting(field, value)
+        if error:
+            self.bot.send_message(self.group_id, error)
+            return
+        if field == "hostname" and value == "-":
+            value = ""
+
+        ok, reload_error = self.bot_instance.update_turnstile_setting(field, value)
+        if ok:
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton(
+                "⬅️" + _("Back"),
+                callback_data=json.dumps({"action": "turnstile_settings"})))
+            self.bot.send_message(
+                self.group_id, _("Turnstile WebApp settings updated"),
+                reply_markup=markup,
+            )
+        else:
+            self.bot.send_message(
+                self.group_id,
+                _("Turnstile WebApp update failed") + f": {reload_error}",
+            )
+
+    @staticmethod
+    def _validate_turnstile_setting(field: str, value: str):
+        if field == "public_url":
+            parsed = urlsplit(value)
+            if (parsed.scheme != "https" or not parsed.hostname
+                    or parsed.query or parsed.fragment):
+                return _("Public URL must use HTTPS and must not contain a query or fragment")
+        elif field in {"site_key", "secret_key", "host"} and not value:
+            return _("This setting cannot be empty")
+        elif field == "hostname" and value != "-":
+            if not re.fullmatch(r"[A-Za-z0-9.-]+", value):
+                return _("Invalid hostname")
+        elif field == "port":
+            if not value.isdigit() or not 1 <= int(value) <= 65535:
+                return _("Port must be between 1 and 65535")
+        elif field == "auth_max_age":
+            if not value.isdigit() or not 30 <= int(value) <= 3600:
+                return _("Telegram data max age must be between 30 and 3600 seconds")
+        return None
 
     # Time Zone Settings
     def time_zone_settings_menu(self, message: Message):

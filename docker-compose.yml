@@ -9,6 +9,35 @@ services:
       - GROUP_ID=your_group_id_here
       - LANGUAGE=zh_CN
       - TG_API=
-      - WORKER=2
+      - WORKERS=2
+      - QUEUE_SIZE=1000
+      - GROUP_QUEUE_SIZE=200
+      - PER_USER_QUEUE_SIZE=5
+      - UNVERIFIED_RATE=0.1
+      - UNVERIFIED_BURST=1
+      - VERIFIED_RATE=0.1666666667
+      - VERIFIED_BURST=3
+      - PRIORITY_RATE=0.5
+      - PRIORITY_BURST=10
+      - PRIORITY_INACTIVITY_SECONDS=86400
+      - GLOBAL_RATE=10
+      - GLOBAL_BURST=20
+      - ABUSE_BLOCK_THRESHOLD=20
+      - ABUSE_BLOCK_SECONDS=3600
+      - RATE_LIMIT_STATE_SIZE=10000
+      # Set only when the image was built with --build-arg ENABLE_REDIS=true.
+      - REDIS_URL=
+      - REDIS_PREFIX=betterforward
+      # Optional first-run defaults. Runtime settings in SQLite take precedence afterward.
+      - WEBAPP_ENABLED=disable
+      - WEBAPP_PUBLIC_URL=
+      - TURNSTILE_SITE_KEY=
+      - TURNSTILE_SECRET_KEY=
+      - TURNSTILE_HOSTNAME=
+      - WEBAPP_HOST=0.0.0.0
+      - WEBAPP_PORT=8080
+      - WEBAPP_AUTH_MAX_AGE=300
+    ports:
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./data:/app/data

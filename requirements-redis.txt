@@ -1,0 +1,3 @@
+# Optional dependency for multi-instance shared rate limiting.
+# Install only when REDIS_URL is configured.
+redis==5.2.1

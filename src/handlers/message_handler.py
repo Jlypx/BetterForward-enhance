@@ -56,6 +56,11 @@ class MessageHandler:
             else:
                 self._handle_group_message(message, msg_text, msg_caption, cursor, db)
 
+    def can_process_private_action(self, message: Message) -> bool:
+        """Apply the verification gate before a private command or edit action."""
+        with sqlite3.connect(self.db_path) as db:
+            return self._check_captcha(message, db.cursor(), db)
+
     def _handle_user_message(self, message: Message, msg_text: str, msg_caption: str, cursor, db):
         """Handle messages from users."""
         start_time = time.time()
@@ -69,70 +74,6 @@ class MessageHandler:
             processing_time = (time.time() - start_time) * 1000
             logger.info(_("Message from user {} blocked by captcha ({:.2f}ms)").format(
                 message.from_user.id, processing_time))
-            return
-
-        # Check if the user is blocked
-        blocked_result = cursor.execute("SELECT block_reason FROM blocked_users WHERE user_id = ? LIMIT 1",
-                                       (message.from_user.id,)).fetchone()
-
-        if blocked_result:
-            block_reason = blocked_result[0] if blocked_result[0] else "admin"
-
-            # Update user info in blocked_users table
-            cursor.execute(
-                "UPDATE blocked_users SET username = ?, first_name = ?, last_name = ? WHERE user_id = ?",
-                (message.from_user.username, message.from_user.first_name,
-                 message.from_user.last_name, message.from_user.id)
-            )
-
-            processing_time = (time.time() - start_time) * 1000
-            logger.info(_("Message from blocked user {} rejected ({:.2f}ms)").format(
-                message.from_user.id, processing_time))
-
-            # Forward message to Blocked Messages topic
-            self._forward_blocked_message(message, block_reason)
-
-            # Send appropriate reply based on block reason
-            if block_reason == "auto_attempts":
-                # Auto-blocked: show appeal button
-                import json
-                from telebot import types
-                markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton(
-                    _("Appeal"),
-                    callback_data=json.dumps({"action": "appeal_request", "user_id": message.from_user.id})
-                ))
-                try:
-                    self.bot.send_message(
-                        message.chat.id,
-                        _("❌ Your account has been blocked. If you believe this is a mistake, you can submit an appeal (one-time opportunity)."),
-                        reply_markup=markup
-                    )
-                except Exception as e:
-                    logger.error(_("Failed to send appeal message to user {}: {}").format(
-                        message.from_user.id, str(e)))
-            else:
-                # Admin blocked: send custom blocked user reply if enabled
-                if self.cache.get("setting_blocked_user_reply_enabled") == "enable":
-                    reply_message = self.cache.get("setting_blocked_user_reply_message")
-                    if reply_message:
-                        try:
-                            self.bot.send_message(message.chat.id, reply_message)
-                            logger.info(_("Sent auto-reply to blocked user {}").format(message.from_user.id))
-                        except Exception as e:
-                            logger.error(_("Failed to send auto-reply to blocked user {}: {}").format(
-                                message.from_user.id, str(e)))
-                else:
-                    # Send default admin blocked message
-                    try:
-                        self.bot.send_message(
-                            message.chat.id,
-                            _("❌ Your account has been blocked by an administrator.")
-                        )
-                    except Exception as e:
-                        logger.error(_("Failed to send blocked message to user {}: {}").format(
-                            message.from_user.id, str(e)))
-
             return
 
         # Check for spam using detector manager
@@ -254,15 +195,16 @@ class MessageHandler:
             message.from_user.id, processing_time))
 
     def _check_captcha(self, message: Message, cursor, db) -> bool:
-        """Check and handle captcha verification."""
-        if self.cache.get("setting_captcha") == "disable":
-            return True
+        """Handle verification and allow only verified users to continue."""
 
         user_id = message.from_user.id
 
         # FIRST: Check if user is blocked - if so, don't generate any captcha
         blocked_result = cursor.execute(
-            "SELECT block_reason FROM blocked_users WHERE user_id = ? LIMIT 1",
+            """SELECT block_reason FROM blocked_users
+               WHERE user_id = ?
+                 AND (blocked_until IS NULL OR blocked_until > CURRENT_TIMESTAMP)
+               LIMIT 1""",
             (user_id,)
         ).fetchone()
 
@@ -272,6 +214,8 @@ class MessageHandler:
             # Check if user is in appeal verification mode
             appeal_verification = self.cache.get(f"appeal_verification_{user_id}")
             if appeal_verification:
+                if self.captcha_manager.is_webapp_pending(user_id):
+                    return False
                 # User is answering appeal verification captcha
                 if self.captcha_manager.verify_captcha(user_id, message.text):
                     # Correct answer - proceed with appeal submission
@@ -294,8 +238,10 @@ class MessageHandler:
                     self.cache.delete(f"captcha_{user_id}")
                     return False
             else:
-                # Forward message to Blocked Messages topic
-                self._forward_blocked_message(message, block_reason)
+                blocked_reply_key = f"blocked_reply_rate_limit_{user_id}"
+                if self.cache.get(blocked_reply_key):
+                    return False
+                self.cache.set(blocked_reply_key, True, 60)
 
                 # User is blocked - show different messages based on block reason
                 if block_reason == "auto_attempts":
@@ -312,9 +258,17 @@ class MessageHandler:
                         _("❌ Your account has been blocked. If you believe this is a mistake, you can submit an appeal (one-time opportunity)."),
                         reply_markup=markup
                     )
+                elif block_reason == "rate_limit":
+                    self.bot.send_message(
+                        message.chat.id,
+                        _("❌ Your account is temporarily blocked because you sent messages too quickly. Please try again later.")
+                    )
                 else:
-                    # Admin blocked: show custom blocked user reply
-                    blocked_user_reply = self.cache.get("setting_blocked_user_reply")
+                    # Admin blocked: send custom blocked user reply
+                    if self.cache.get("setting_blocked_user_reply_enabled") == "enable":
+                        blocked_user_reply = self.cache.get("setting_blocked_user_reply_message")
+                    else:
+                        blocked_user_reply = None
                     if blocked_user_reply:
                         self.bot.send_message(message.chat.id, blocked_user_reply)
                     else:
@@ -327,6 +281,8 @@ class MessageHandler:
 
         # Captcha Handler - User is answering a captcha
         if (captcha := self.cache.get(f"captcha_{user_id}")) is not None:
+            if self.captcha_manager.is_webapp_pending(user_id):
+                return False
             if not self.captcha_manager.verify_captcha(user_id, message.text):
                 # Wrong answer - record attempt
                 attempt_count = self.captcha_manager.record_attempt(user_id, db)
@@ -362,7 +318,7 @@ class MessageHandler:
                     return False
 
                 # Generate new captcha (don't reuse the same one)
-                captcha_type = self.cache.get("setting_captcha")
+                captcha_type = self._get_captcha_type()
                 new_captcha = self.captcha_manager.generate_captcha(user_id, captcha_type)
 
                 if new_captcha:  # For math/image captcha
@@ -401,10 +357,11 @@ class MessageHandler:
                                   _("⚠️ Your message was not sent. Please complete verification first."),
                                   reply_to_message_id=message.message_id)
 
-            captcha_type = self.cache.get("setting_captcha")
+            captcha_type = self._get_captcha_type()
             match captcha_type:
-                case "button":
-                    self.captcha_manager.generate_captcha(user_id, captcha_type)
+                case "webapp":
+                    self.captcha_manager.generate_captcha(
+                        user_id, captcha_type, purpose="normal")
                     return False
                 case "math":
                     captcha = self.captcha_manager.generate_captcha(user_id, captcha_type)
@@ -420,6 +377,25 @@ class MessageHandler:
                                           _("Invalid captcha setting") + f": {self.cache.get('setting_captcha')}")
                     return False
         return True
+
+    def _get_captcha_type(self) -> str:
+        """Return an enforced captcha type, safely handling legacy settings."""
+        captcha_type = self.cache.get("setting_captcha")
+        if captcha_type == "webapp":
+            service = self.captcha_manager.webapp_service
+            if service and service.is_enabled():
+                return captcha_type
+        if captcha_type in {"math", "image"}:
+            return captcha_type
+
+        fallback = "webapp" if (
+            self.captcha_manager.webapp_service
+            and self.captcha_manager.webapp_service.is_enabled()
+        ) else "image"
+        logger.warning(
+            _("Invalid or unavailable captcha setting; using {} captcha for verification").format(
+                fallback))
+        return fallback
 
     def _submit_appeal(self, user_id: int, user, db, cursor):
         """Submit an appeal request after successful verification."""
@@ -517,61 +493,6 @@ class MessageHandler:
                   "Please review and decide:").format(full_name, user_id, username),
                 reply_markup=markup
             )
-
-    def _forward_blocked_message(self, message: Message, block_reason: str):
-        """Forward blocked user's message to Blocked Messages topic."""
-        try:
-            blocked_topic_id = self.cache.get("blocked_topic_id")
-
-            if blocked_topic_id is None:
-                # Try to create blocked topic if it doesn't exist
-                if self.bot_instance:
-                    self.bot_instance._create_blocked_topic()
-                    blocked_topic_id = self.cache.get("blocked_topic_id")
-
-            if blocked_topic_id is None:
-                logger.error(_("Blocked Messages topic ID not found"))
-                return
-
-            # Get user info
-            username = message.from_user.username or "N/A"
-            first_name = message.from_user.first_name or ""
-            last_name = message.from_user.last_name or ""
-            full_name = f"{first_name} {last_name}".strip() or "N/A"
-            user_id = message.from_user.id
-
-            # Determine block reason text
-            if block_reason == "auto_attempts":
-                reason_text = _("Auto-blocked (3 failed verification attempts)")
-            else:
-                reason_text = _("Blocked by administrator")
-
-            # Forward the message first
-            fwd_msg = self.bot.forward_message(
-                chat_id=self.group_id,
-                from_chat_id=message.chat.id,
-                message_id=message.message_id,
-                message_thread_id=blocked_topic_id
-            )
-
-            # Reply to the forwarded message with user info
-            info_text = _("🚫 Blocked User Message\n\n"
-                         "User: {} (ID: {})\n"
-                         "Username: @{}\n"
-                         "Block Reason: {}\n\n"
-                         "💡 Reply to this message with /unban to unblock").format(full_name, user_id, username, reason_text)
-
-            self.bot.send_message(
-                self.group_id,
-                info_text,
-                message_thread_id=blocked_topic_id,
-                reply_to_message_id=fwd_msg.message_id,
-                disable_notification=True
-            )
-
-            logger.info(_("Forwarded blocked user message from {} to Blocked Messages topic").format(user_id))
-        except Exception as e:
-            logger.error(_("Failed to forward blocked message: {}").format(str(e)))
 
     def _handle_auto_response(self, message: Message):
         """Handle automatic responses."""
@@ -676,6 +597,9 @@ class MessageHandler:
                 cursor.execute(
                     "INSERT INTO messages (received_id, forwarded_id, topic_id, in_group) VALUES (?, ?, ?, ?)",
                     (message.message_id, fwd_msg.message_id, message.message_thread_id, True))
+                if (self.bot_instance
+                        and self.captcha_manager.is_user_verified(user_id, db)):
+                    self.bot_instance.mark_user_replied(user_id)
             except ApiTelegramException as e:
                 logger.error(_("Failed to forward message to user {}").format(user_id))
                 logger.error(e)
