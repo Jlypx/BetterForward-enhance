@@ -313,37 +313,71 @@ class CommandHandler:
         self.bot.delete_message(chat_id=message.chat.id, message_id=message.reply_to_message.id)
         self.bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
 
+    def _delete_command_input(self, message: Message):
+        try:
+            self.bot.delete_message(message.chat.id, message.message_id)
+        except ApiTelegramException:
+            logger.debug("Could not delete command message %s", message.message_id)
+
+    def _verification_controls(self):
+        markup = types.InlineKeyboardMarkup()
+        markup.row(
+            types.InlineKeyboardButton(
+                _("Mark verified"),
+                callback_data=json.dumps({"action": "set_verification", "value": "verified"})),
+            types.InlineKeyboardButton(
+                _("Remove verification"),
+                callback_data=json.dumps({"action": "set_verification", "value": "unverified"})),
+        )
+        return markup
+
+    def _set_topic_verification(self, message: Message, verified: bool):
+        with sqlite3.connect(self.db_path) as db:
+            cursor = db.cursor()
+            cursor.execute(
+                "SELECT user_id FROM topics WHERE thread_id = ?",
+                (message.message_thread_id,))
+            user = cursor.fetchone()
+            if user is None:
+                return _("User not found")
+            if verified:
+                self.captcha_manager.set_user_verified(user[0], db)
+                return _("User verified successfully.")
+            self.captcha_manager.remove_user_verification(user[0], db)
+            return _("User verification removed.")
+
+    def set_verification_status(self, message: Message, value: str):
+        """Apply a verification choice from the inline controls."""
+        if message.chat.id != self.group_id or message.message_thread_id is None:
+            return
+        if value not in {"verified", "unverified"}:
+            return
+        result = self._set_topic_verification(message, value == "verified")
+        self.bot.edit_message_text(
+            result, message.chat.id, message.message_id, reply_markup=None)
+
     def handle_verify(self, message: Message):
-        """Handle /verify command to manually set verification status."""
+        """Offer inline verification controls for the current user topic."""
         if message.chat.id != self.group_id or message.message_thread_id is None:
             return
 
         command_parts = (message.text or "").split()
-        if len(command_parts) != 2 or command_parts[1].lower() not in ["true", "false"]:
-            self.bot.send_message(message.chat.id,
-                                  _("Invalid command format.\nUse /verify <true/false>"),
-                                  message_thread_id=message.message_thread_id)
+        if len(command_parts) == 2 and command_parts[1].lower() in {"true", "false"}:
+            result = self._set_topic_verification(
+                message, command_parts[1].lower() == "true")
+            self._delete_command_input(message)
+            self.bot.send_message(
+                message.chat.id, result, message_thread_id=message.message_thread_id)
             return
 
-        verified_status = command_parts[1].lower() == "true"
-        with sqlite3.connect(self.db_path) as db:
-            db_cursor = db.cursor()
-            db_cursor.execute("SELECT user_id FROM topics WHERE thread_id = ?",
-                              (message.message_thread_id,))
-            user_id = db_cursor.fetchone()
-            if user_id is None:
-                self.bot.send_message(message.chat.id, _("User not found"),
-                                      message_thread_id=message.message_thread_id)
-                return
-            user_id = user_id[0]
-            if verified_status:
-                self.captcha_manager.set_user_verified(user_id, db)
-                self.bot.send_message(message.chat.id, _("User verified successfully."),
-                                      message_thread_id=message.message_thread_id)
-            else:
-                self.captcha_manager.remove_user_verification(user_id, db)
-                self.bot.send_message(message.chat.id, _("User verification removed."),
-                                      message_thread_id=message.message_thread_id)
+        self._delete_command_input(message)
+        self.bot.send_message(
+            message.chat.id,
+            _("Set verified status"),
+            message_thread_id=message.message_thread_id,
+            reply_markup=self._verification_controls(),
+        )
+
 
     def handle_edit(self, message: Message):
         """Handle edited messages."""

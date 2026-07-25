@@ -36,6 +36,34 @@ class AdminHandler:
         """Check if message is in valid chat context."""
         return message.chat.id == self.group_id and message.message_thread_id is None
 
+    def _edit_panel(self, message: Message, text: str, markup=None):
+        """Update an existing admin panel and remember it for command entry points."""
+        return self._edit_panel_by_id(message.chat.id, message.message_id, text, markup)
+
+    def _edit_panel_by_id(self, chat_id: int, message_id: int, text: str, markup=None):
+        """Update one admin panel without creating another group message."""
+        try:
+            updated = self.bot.edit_message_text(
+                text, chat_id, message_id, reply_markup=markup)
+            self.cache.set("admin_panel_message_id", message_id)
+            return updated
+        except ApiTelegramException as error:
+            logger.warning("Could not update admin panel %s: %s", message_id, error)
+            return None
+
+    def _delete_admin_input(self, message: Message):
+        """Remove an administrator setting value once it has been read."""
+        if not self.check_valid_chat(message):
+            return
+        try:
+            self.bot.delete_message(message.chat.id, message.message_id)
+        except ApiTelegramException:
+            logger.debug("Could not delete admin input message %s", message.message_id)
+
+    def _panel_back_button(self, action: str = "menu"):
+        return types.InlineKeyboardButton(
+            "⬅️" + _("Back"), callback_data=json.dumps({"action": action}))
+
     def update_time_zone(self):
         """Update the timezone from cache and propagate to auto_response_manager."""
         tz_str = self.cache.get("setting_time_zone")
@@ -80,201 +108,240 @@ class AdminHandler:
             markup.row(*buttons[i:i + 2])
 
         if edit:
-            self.bot.edit_message_text(_("Menu"), message.chat.id, message.message_id,
-                                       reply_markup=markup)
-        else:
-            self.bot.send_message(self.group_id, _("Menu"), reply_markup=markup,
-                                  message_thread_id=None)
+            self._edit_panel(message, _("Menu"), markup)
+            return
+
+        panel_id = self.cache.get("admin_panel_message_id")
+        if panel_id and self._edit_panel_by_id(self.group_id, panel_id, _("Menu"), markup):
+            self._delete_admin_input(message)
+            return
+        panel = self.bot.send_message(
+            self.group_id, _("Menu"), reply_markup=markup, message_thread_id=None)
+        self.cache.set("admin_panel_message_id", panel.message_id)
+        self._delete_admin_input(message)
 
     # Auto Reply Management
     def auto_reply_menu(self, message: Message):
-        """Display auto reply management menu."""
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("➕" + _("Add Auto Reply"),
-                                              callback_data=json.dumps({"action": "start_add_auto_reply"})))
-        markup.add(types.InlineKeyboardButton("⚙️" + _("Manage Existing Auto Reply"),
-                                              callback_data=json.dumps({"action": "manage_auto_reply"})))
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                              callback_data=json.dumps({"action": "menu"})))
-        self.bot.send_message(text=_("Auto Reply"),
-                              chat_id=message.chat.id,
-                              message_thread_id=None,
-                              reply_markup=markup)
+        """Display auto reply controls in the existing admin panel."""
+        if self.check_valid_chat(message):
+            self.auto_reply_menu_by_id(message.chat.id, message.message_id)
+
+    def _clear_auto_response_draft(self):
+        for key in (
+                "auto_response_key", "auto_response_value", "auto_response_regex",
+                "auto_response_type", "auto_response_start_time", "auto_response_end_time"):
+            self.cache.delete(key)
 
     def add_auto_response(self, message: Message):
-        """Start the process of adding an auto response."""
+        """Start an auto-reply draft in the existing admin panel."""
         if not self.check_valid_chat(message):
             return
-        msg = self.bot.edit_message_text(
-            text=_("Let's set up an automatic response.\nSend /cancel to cancel this operation.\n\n"
-                   "Please send the keywords or regular expression that should trigger this response."),
-            chat_id=self.group_id, message_id=message.message_id)
-        self.bot.register_next_step_handler(msg, self.add_auto_response_type)
+        self._clear_auto_response_draft()
+        prompt = self._edit_panel(
+            message,
+            _("Let's set up an automatic response.\nSend /cancel to cancel this operation.\n\n"
+              "Please send the keywords or regular expression that should trigger this response."),
+        )
+        if prompt:
+            self.bot.register_next_step_handler(
+                prompt, self.add_auto_response_type, message.message_id)
 
-    def add_auto_response_type(self, message: Message):
-        """Process the trigger pattern for auto response."""
+    def add_auto_response_type(self, message: Message, panel_message_id: int):
+        """Store an auto-reply trigger and remove the intermediate input."""
         if not self.check_valid_chat(message):
             return
-        if isinstance(message.text, str) and message.text.startswith("/cancel"):
-            self.bot.send_message(self.group_id, _("Operation cancelled"))
+        text = message.text if message.content_type == "text" else None
+        self._delete_admin_input(message)
+        if text is None:
+            self._clear_auto_response_draft()
+            self._edit_panel_by_id(
+                message.chat.id, panel_message_id, _("Invalid input"),
+                types.InlineKeyboardMarkup().add(self._panel_back_button("auto_reply")))
             return
-        if message.content_type != "text":
-            self.bot.send_message(self.group_id, _("Invalid input"))
+        if text.startswith("/cancel"):
+            self._clear_auto_response_draft()
+            self.auto_reply_menu_by_id(message.chat.id, panel_message_id, _("Operation cancelled"))
             return
 
-        self.cache.set("auto_response_key", message.text, 300)
+        self.cache.set("auto_response_key", text, 300)
         try:
-            re.compile(message.text)
+            re.compile(text)
             is_regex = True
         except re.error:
             is_regex = False
         self.cache.set("auto_response_regex", is_regex, 300)
-        self.add_auto_response_value(message)
+        self._prompt_auto_response_value(message.chat.id, panel_message_id)
 
-    def add_auto_response_value(self, message: Message):
-        """Get the response content for auto response."""
-        if not self.check_valid_chat(message):
-            return
-        if isinstance(message.text, str) and message.text.startswith("/cancel"):
-            self.bot.send_message(self.group_id, _("Operation cancelled"))
-            return
+    def auto_reply_menu_by_id(self, chat_id: int, message_id: int, notice: str | None = None):
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            "➕" + _("Add Auto Reply"),
+            callback_data=json.dumps({"action": "start_add_auto_reply"})))
+        markup.add(types.InlineKeyboardButton(
+            "⚙️" + _("Manage Existing Auto Reply"),
+            callback_data=json.dumps({"action": "manage_auto_reply"})))
+        markup.add(self._panel_back_button())
+        text = _("Auto Reply") if not notice else notice + "\n\n" + _("Auto Reply")
+        return self._edit_panel_by_id(chat_id, message_id, text, markup)
 
-        if self.cache.get("auto_response_regex") is True:
+    def _prompt_auto_response_value(self, chat_id: int, panel_message_id: int):
+        key = self.cache.get("auto_response_key")
+        if key is None:
+            self.auto_reply_menu_by_id(
+                chat_id, panel_message_id,
+                _("The operation has timed out. Please initiate the process again."))
+            return
+        if self.cache.get("auto_response_regex"):
             try:
-                re.compile(self.cache.get("auto_response_key"))
+                re.compile(key)
             except re.error:
-                markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                                      callback_data=json.dumps({"action": "auto_reply"})))
-                self.bot.send_message(
-                    text=_("Invalid regular expression"),
-                    chat_id=self.group_id,
-                    message_thread_id=None,
-                    reply_markup=markup)
+                self._clear_auto_response_draft()
+                self.auto_reply_menu_by_id(chat_id, panel_message_id, _("Invalid regular expression"))
                 return
+        prompt = self._edit_panel_by_id(
+            chat_id,
+            panel_message_id,
+            _("Please send the response content. It can be text, stickers, photos and so on."),
+        )
+        if prompt:
+            self.bot.register_next_step_handler(
+                prompt, self.add_auto_response_time, panel_message_id)
 
-        msg = self.bot.send_message(
-            text=_("Please send the response content. It can be text, stickers, photos and so on."),
-            chat_id=self.group_id,
-            message_thread_id=None)
-        self.bot.register_next_step_handler(msg, self.add_auto_response_time)
-
-    def add_auto_response_time(self, message: Message):
-        """Get time restrictions for auto response."""
+    def add_auto_response_time(self, message: Message, panel_message_id: int):
+        """Store auto-reply content and offer button-based time restrictions."""
         if not self.check_valid_chat(message):
             return
         if isinstance(message.text, str) and message.text.startswith("/cancel"):
-            self.bot.send_message(self.group_id, _("Operation cancelled"))
+            self._delete_admin_input(message)
+            self._clear_auto_response_draft()
+            self.auto_reply_menu_by_id(message.chat.id, panel_message_id, _("Operation cancelled"))
             return
         if self.cache.get("auto_response_key") is None:
-            self.bot.send_message(self.group_id,
-                                  _("The operation has timed out. Please initiate the process again."))
+            self._delete_admin_input(message)
+            self.auto_reply_menu_by_id(
+                message.chat.id, panel_message_id,
+                _("The operation has timed out. Please initiate the process again."))
             return
-
-        self.cache.set("auto_response_key", self.cache.get("auto_response_key"), 300)
 
         match message.content_type:
             case "photo":
-                self.cache.set("auto_response_value", message.photo[-1].file_id, 300)
-                self.cache.set("auto_response_type", "photo", 300)
+                value, response_type = message.photo[-1].file_id, "photo"
             case "text":
-                self.cache.set("auto_response_value", message.text, 300)
-                self.cache.set("auto_response_type", "text", 300)
+                value, response_type = message.text, "text"
             case "sticker":
-                self.cache.set("auto_response_value", message.sticker.file_id, 300)
-                self.cache.set("auto_response_type", "sticker", 300)
+                value, response_type = message.sticker.file_id, "sticker"
             case "video":
-                self.cache.set("auto_response_value", message.video.file_id, 300)
-                self.cache.set("auto_response_type", "video", 300)
+                value, response_type = message.video.file_id, "video"
             case "document":
-                self.cache.set("auto_response_value", message.document.file_id, 300)
-                self.cache.set("auto_response_type", "document", 300)
+                value, response_type = message.document.file_id, "document"
             case _:
-                self.bot.send_message(self.group_id, _("Unsupported message type"))
+                self._delete_admin_input(message)
+                self.auto_reply_menu_by_id(message.chat.id, panel_message_id, _("Unsupported message type"))
                 return
 
+        self._delete_admin_input(message)
+        self.cache.set("auto_response_value", value, 300)
+        self.cache.set("auto_response_type", response_type, 300)
+        self.cache.set("auto_response_key", self.cache.get("auto_response_key"), 300)
         self.cache.set("auto_response_regex", self.cache.get("auto_response_regex"), 300)
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("✅" + _("Yes"),
-                                              callback_data=json.dumps({"action": "set_auto_response_time",
-                                                                        "value": "yes"})))
-        markup.add(types.InlineKeyboardButton("❌" + _("No"),
-                                              callback_data=json.dumps({"action": "set_auto_response_time",
-                                                                        "value": "no"})))
-        self.bot.send_message(self.group_id,
-                              _("Do you want to set a start and end time for this auto response?"),
-                              reply_markup=markup)
+        markup.row(
+            types.InlineKeyboardButton(
+                "✅" + _("Yes"),
+                callback_data=json.dumps({"action": "set_auto_response_time", "value": "yes"})),
+            types.InlineKeyboardButton(
+                "❌" + _("No"),
+                callback_data=json.dumps({"action": "set_auto_response_time", "value": "no"})),
+        )
+        self._edit_panel_by_id(
+            message.chat.id, panel_message_id,
+            _("Do you want to set a start and end time for this auto response?"), markup)
 
     def handle_auto_response_time_callback(self, message: Message, data: dict):
-        """Handle callback for auto response time setting."""
-        self.bot.delete_message(self.group_id, message.message_id)
-        if data["value"] == "no":
+        """Handle time restrictions without replacing the admin panel."""
+        value = data.get("value")
+        if value == "no":
             self.cache.set("auto_response_start_time", None, 300)
             self.cache.set("auto_response_end_time", None, 300)
-            self.process_add_auto_reply(message)
-        elif data["value"] == "yes":
-            msg = self.bot.send_message(self.group_id,
-                                        _("Please enter the start time in HH:MM format (24-hour clock):"))
-            self.bot.register_next_step_handler(msg, self.set_auto_response_start_time)
+            self._finish_auto_response(message.chat.id, message.message_id)
+            return
+        if value == "yes":
+            prompt = self._edit_panel(
+                message, _("Please enter the start time in HH:MM format (24-hour clock):"))
+            if prompt:
+                self.bot.register_next_step_handler(
+                    prompt, self.set_auto_response_start_time, message.message_id)
 
-    def set_auto_response_start_time(self, message: Message):
-        """Set the start time for auto response."""
+    def set_auto_response_start_time(self, message: Message, panel_message_id: int):
+        """Store the auto-reply start time and remove the input."""
         if not self.check_valid_chat(message):
             return
-        try:
-            start_time = datetime.strptime(message.text, "%H:%M").time()
-            self.cache.set("auto_response_start_time", start_time, 300)
-            msg = self.bot.send_message(self.group_id,
-                                        _("Please enter the end time in HH:MM format (24-hour clock):"))
-            self.bot.register_next_step_handler(msg, self.set_auto_response_end_time)
-        except ValueError:
-            msg = self.bot.send_message(self.group_id,
-                                        _("Invalid time format.") + "\n" +
-                                        _("Please enter the start time in HH:MM format (24-hour clock):"))
-            self.bot.register_next_step_handler(msg, self.set_auto_response_start_time)
-
-    def set_auto_response_end_time(self, message: Message):
-        """Set the end time for auto response."""
-        if not self.check_valid_chat(message):
+        value = message.text if isinstance(message.text, str) else ""
+        self._delete_admin_input(message)
+        if value.startswith("/cancel"):
+            self._clear_auto_response_draft()
+            self.auto_reply_menu_by_id(message.chat.id, panel_message_id, _("Operation cancelled"))
             return
         try:
-            end_time = datetime.strptime(message.text, "%H:%M").time()
-            self.cache.set("auto_response_end_time", end_time, 300)
-            self.process_add_auto_reply(message)
+            start_time = datetime.strptime(value, "%H:%M").time()
         except ValueError:
-            msg = self.bot.send_message(self.group_id,
-                                        _("Invalid time format.") + "\n" +
-                                        _("Please enter the end time in HH:MM format (24-hour clock):"))
-            self.bot.register_next_step_handler(msg, self.set_auto_response_end_time)
+            prompt = self._edit_panel_by_id(
+                message.chat.id, panel_message_id,
+                _("Invalid time format.") + "\n" +
+                _("Please enter the start time in HH:MM format (24-hour clock):"))
+            if prompt:
+                self.bot.register_next_step_handler(
+                    prompt, self.set_auto_response_start_time, panel_message_id)
+            return
+        self.cache.set("auto_response_start_time", start_time, 300)
+        prompt = self._edit_panel_by_id(
+            message.chat.id, panel_message_id,
+            _("Please enter the end time in HH:MM format (24-hour clock):"))
+        if prompt:
+            self.bot.register_next_step_handler(
+                prompt, self.set_auto_response_end_time, panel_message_id)
 
-    def process_add_auto_reply(self, message: Message):
-        """Process and save the auto reply."""
+    def set_auto_response_end_time(self, message: Message, panel_message_id: int):
+        """Store the end time and finish the draft in the existing panel."""
+        if not self.check_valid_chat(message):
+            return
+        value = message.text if isinstance(message.text, str) else ""
+        self._delete_admin_input(message)
+        if value.startswith("/cancel"):
+            self._clear_auto_response_draft()
+            self.auto_reply_menu_by_id(message.chat.id, panel_message_id, _("Operation cancelled"))
+            return
+        try:
+            end_time = datetime.strptime(value, "%H:%M").time()
+        except ValueError:
+            prompt = self._edit_panel_by_id(
+                message.chat.id, panel_message_id,
+                _("Invalid time format.") + "\n" +
+                _("Please enter the end time in HH:MM format (24-hour clock):"))
+            if prompt:
+                self.bot.register_next_step_handler(
+                    prompt, self.set_auto_response_end_time, panel_message_id)
+            return
+        self.cache.set("auto_response_end_time", end_time, 300)
+        self._finish_auto_response(message.chat.id, panel_message_id)
+
+    def _finish_auto_response(self, chat_id: int, panel_message_id: int):
+        """Persist an auto-reply draft and replace the panel with its result."""
         key = self.cache.pop("auto_response_key")
         value = self.cache.pop("auto_response_value")
         is_regex = self.cache.pop("auto_response_regex")
         response_type = self.cache.pop("auto_response_type")
         start_time = self.cache.pop("auto_response_start_time")
         end_time = self.cache.pop("auto_response_end_time")
-
-        if start_time is not None and end_time is not None:
-            start_time = start_time.strftime("%H:%M")
-            end_time = end_time.strftime("%H:%M")
-
-        markup = types.InlineKeyboardMarkup()
-        back_button = types.InlineKeyboardButton("⬅️" + _("Back"),
-                                                 callback_data=json.dumps({"action": "menu"}))
         if None in [key, value, is_regex, response_type]:
-            self.bot.delete_message(self.group_id, message.message_id)
-            self.bot.send_message(self.group_id, _("Invalid action"), reply_markup=markup)
+            self.auto_reply_menu_by_id(chat_id, panel_message_id, _("Invalid action"))
             return
+        if start_time is not None and end_time is not None:
+            start_time, end_time = start_time.strftime("%H:%M"), end_time.strftime("%H:%M")
+        self.auto_response_manager.add_auto_response(
+            key, value, is_regex, response_type, start_time, end_time)
+        self.auto_reply_menu_by_id(chat_id, panel_message_id, _("Auto reply added"))
 
-        self.auto_response_manager.add_auto_response(key, value, is_regex, response_type,
-                                                     start_time, end_time)
-        markup.add(back_button)
-        self.bot.send_message(text=_("Auto reply added"),
-                              chat_id=message.chat.id,
-                              message_thread_id=None,
-                              reply_markup=markup)
 
     def manage_auto_reply(self, message: Message, page: int = 1, page_size: int = 5):
         """Display paginated list of auto replies."""
@@ -479,122 +546,104 @@ class AdminHandler:
                                    reply_markup=markup)
 
     # Default Message Settings
-    def default_msg_menu(self, message: Message):
-        """Display default message settings menu."""
-        if not self.check_valid_chat(message):
-            return
+    def _render_default_message_panel(self, chat_id: int, message_id: int, notice: str | None = None):
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("✏️" + _("Edit Message"),
-                                              callback_data=json.dumps({"action": "edit_default_msg"})))
-        markup.add(types.InlineKeyboardButton("🔄️" + _("Set to Default"),
-                                              callback_data=json.dumps({"action": "empty_default_msg"})))
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                              callback_data=json.dumps({"action": "menu"})))
-        self.bot.send_message(
-            text=_("Default Message") + "\n" +
-                 _("The default message is an auto-reply to the commands /help and /start"),
-            chat_id=message.chat.id,
-            message_thread_id=None,
-            reply_markup=markup)
+        markup.add(types.InlineKeyboardButton(
+            "✏️" + _("Edit Message"),
+            callback_data=json.dumps({"action": "edit_default_msg"})))
+        markup.add(types.InlineKeyboardButton(
+            "🔄️" + _("Set to Default"),
+            callback_data=json.dumps({"action": "empty_default_msg"})))
+        markup.add(self._panel_back_button())
+        text = _("Default Message") + "\n" + _(
+            "The default message is an auto-reply to the commands /help and /start")
+        if notice:
+            text = notice + "\n\n" + text
+        return self._edit_panel_by_id(chat_id, message_id, text, markup)
+
+    def default_msg_menu(self, message: Message):
+        """Display default message settings in the current admin panel."""
+        if self.check_valid_chat(message):
+            self._render_default_message_panel(message.chat.id, message.message_id)
 
     def edit_default_msg(self, message: Message):
-        """Start editing default message."""
-        msg = self.bot.edit_message_text(
-            text=_("Let's set up the default message.\nSend /cancel to cancel this operation.\n\n"
-                   "Please send me the response."),
-            chat_id=self.group_id, message_id=message.message_id)
-        self.bot.register_next_step_handler(msg, self.edit_default_msg_handle)
+        """Prompt for a default message without creating a separate prompt."""
+        prompt = self._edit_panel(
+            message,
+            _("Let's set up the default message.\nSend /cancel to cancel this operation.\n\n"
+              "Please send me the response."),
+        )
+        if prompt:
+            self.bot.register_next_step_handler(
+                prompt, self.edit_default_msg_handle, message.message_id)
 
-    def edit_default_msg_handle(self, message: Message):
-        """Handle default message editing."""
-        if not isinstance(message.text, str):
-            self.bot.send_message(self.group_id, _("Invalid input"))
+    def edit_default_msg_handle(self, message: Message, panel_message_id: int):
+        """Store the default message and remove the administrator's input."""
+        if not self.check_valid_chat(message):
             return
-        if isinstance(message.text, str) and message.text.startswith("/cancel"):
-            self.bot.send_message(self.group_id, _("Operation cancelled"))
+        text = message.text if isinstance(message.text, str) else None
+        self._delete_admin_input(message)
+        if text is None:
+            self._render_default_message_panel(
+                message.chat.id, panel_message_id, _("Invalid input"))
+            return
+        if text.startswith("/cancel"):
+            self._render_default_message_panel(
+                message.chat.id, panel_message_id, _("Operation cancelled"))
             return
 
-        self.database.set_setting('default_message', message.text)
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                              callback_data=json.dumps({"action": "menu"})))
-        self.bot.send_message(self.group_id, _("Default message has been updated."),
-                              reply_markup=markup)
+        self.database.set_setting("default_message", text)
+        self._render_default_message_panel(
+            message.chat.id, panel_message_id, _("Default message has been updated."))
 
     def empty_default_msg(self, message: Message):
-        """Reset default message to default."""
-        self.database.set_setting('default_message', None)
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                              callback_data=json.dumps({"action": "menu"})))
-        self.bot.edit_message_text(_("Default message has been restored."),
-                                   message.chat.id, message.message_id, reply_markup=markup)
+        """Reset the default message to the built-in reply."""
+        self.database.set_setting("default_message", None)
+        self._render_default_message_panel(
+            message.chat.id, message.message_id, _("Default message has been restored."))
 
     # Captcha Settings
-    def captcha_settings_menu(self, message: Message):
-        """Display captcha settings menu."""
+    def captcha_settings_menu(self, message: Message, notice: str | None = None):
+        """Display captcha choices in the current admin panel."""
+        if not self.check_valid_chat(message):
+            return
         captcha_list = {
             _("Math Captcha"): "math",
             _("Image Captcha"): "image",
         }
         if self.bot_instance and self.bot_instance.webapp_service.is_enabled():
             captcha_list[_("Cloudflare Turnstile")] = "webapp"
-        if not self.check_valid_chat(message):
-            return
 
         markup = types.InlineKeyboardMarkup()
-        for key, value in captcha_list.items():
-            icon = "✅" + _("(Selected) ") if self.database.get_setting("captcha") == value else "⚪"
+        current = self.cache.get("setting_captcha")
+        for label, value in captcha_list.items():
+            icon = "✅" + _("(Selected) ") if current == value else "⚪"
             markup.add(types.InlineKeyboardButton(
-                icon + key,
+                icon + label,
                 callback_data=json.dumps({"action": "set_captcha", "value": value})))
         markup.add(types.InlineKeyboardButton(
             _("Configure Turnstile WebApp"),
             callback_data=json.dumps({"action": "turnstile_settings"})))
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                              callback_data=json.dumps({"action": "menu"})))
-        self.bot.send_message(text=_("Captcha Settings") + "\n",
-                              chat_id=message.chat.id,
-                              message_thread_id=None,
-                              reply_markup=markup)
+        markup.add(self._panel_back_button())
+        text = _("Captcha Settings")
+        if notice:
+            text = notice + "\n\n" + text
+        self._edit_panel(message, text, markup)
 
     def set_captcha(self, message: Message, value: str):
-        """Set captcha setting."""
+        """Set the captcha type and refresh the same settings panel."""
         if value not in {"math", "image", "webapp"}:
             logger.warning("Rejected invalid captcha setting: %s", value)
             return
         if (value == "webapp" and
                 (not self.bot_instance or not self.bot_instance.webapp_service.is_enabled())):
-            self.bot.send_message(message.chat.id, _("Turnstile WebApp is not enabled"))
+            self.captcha_settings_menu(message, _("Turnstile WebApp is not enabled"))
             return
-        self.database.set_setting('captcha', value)
+        self.database.set_setting("captcha", value)
         self.cache.set("setting_captcha", value)
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                              callback_data=json.dumps({"action": "menu"})))
-        self.bot.edit_message_text(_("Captcha settings updated"),
-                                   message.chat.id, message.message_id, reply_markup=markup)
+        self.captcha_settings_menu(message, _("Captcha settings updated"))
 
-    def turnstile_settings_menu(self, message: Message):
-        """Display persistent runtime Turnstile WebApp settings."""
-        if not self.check_valid_chat(message) or not self.bot_instance:
-            return
-        settings = self.bot_instance.get_turnstile_settings()
-        running = self.bot_instance.webapp_service.is_enabled()
-        secret_status = _("Configured") if settings.get("secret_key") else _("Not configured")
-        site_key = settings.get("site_key") or _("Not configured")
-        if len(site_key) > 12:
-            site_key = site_key[:6] + "..." + site_key[-4:]
-
-        text = _("Turnstile WebApp Settings") + "\n\n"
-        text += f"{_('Status')}: {_('Running') if running else _('Disabled')}\n"
-        text += f"{_('Public URL')}: {settings.get('public_url') or _('Not configured')}\n"
-        text += f"{_('Site Key')}: {site_key}\n"
-        text += f"{_('Secret Key')}: {secret_status}\n"
-        text += f"{_('Expected hostname')}: {settings.get('hostname') or _('Not enforced')}\n"
-        text += f"{_('Listener')}: {settings.get('host')}:{settings.get('port')}\n"
-        text += f"{_('Telegram data max age')}: {settings.get('auth_max_age')}s"
-
+    def _turnstile_markup(self, running: bool):
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton(
             _("Disable") if running else _("Enable"),
@@ -613,35 +662,52 @@ class AdminHandler:
         }
         for field, label in labels.items():
             markup.add(types.InlineKeyboardButton(
-                label,
+                "✏️ " + label,
                 callback_data=json.dumps({
                     "action": "edit_turnstile_setting", "field": field,
                 })))
-        markup.add(types.InlineKeyboardButton(
-            "⬅️" + _("Back"), callback_data=json.dumps({"action": "menu"})))
-        self.bot.send_message(
-            message.chat.id, text, message_thread_id=None, reply_markup=markup)
+        markup.add(self._panel_back_button())
+        return markup
+
+    def _render_turnstile_panel(self, chat_id: int, message_id: int, notice: str | None = None):
+        if not self.bot_instance:
+            return None
+        settings = self.bot_instance.get_turnstile_settings()
+        running = self.bot_instance.webapp_service.is_enabled()
+        secret_status = _("Configured") if settings.get("secret_key") else _("Not configured")
+        site_key = settings.get("site_key") or _("Not configured")
+        if len(site_key) > 12:
+            site_key = site_key[:6] + "..." + site_key[-4:]
+
+        text = _("Turnstile WebApp Settings") + "\n\n"
+        text += f"{_('Status')}: {_('Running') if running else _('Disabled')}\n"
+        text += f"{_('Public URL')}: {settings.get('public_url') or _('Not configured')}\n"
+        text += f"{_('Site Key')}: {site_key}\n"
+        text += f"{_('Secret Key')}: {secret_status}\n"
+        text += f"{_('Expected hostname')}: {settings.get('hostname') or _('Not enforced')}\n"
+        text += f"{_('Listener')}: {settings.get('host')}:{settings.get('port')}\n"
+        text += f"{_('Telegram data max age')}: {settings.get('auth_max_age')}s"
+        if notice:
+            text = notice + "\n\n" + text
+        return self._edit_panel_by_id(
+            chat_id, message_id, text, self._turnstile_markup(running))
+
+    def turnstile_settings_menu(self, message: Message, notice: str | None = None):
+        """Display persistent runtime Turnstile WebApp settings in one panel."""
+        if self.check_valid_chat(message) and self.bot_instance:
+            self._render_turnstile_panel(message.chat.id, message.message_id, notice)
 
     def set_turnstile_enabled(self, message: Message, value: str):
-        """Enable or disable the persisted WebApp service immediately."""
+        """Enable or disable the persisted WebApp service and refresh the panel."""
         if value not in {"enable", "disable"} or not self.bot_instance:
             return
         ok, error = self.bot_instance.update_turnstile_setting("enabled", value)
-        if ok:
-            self.bot.send_message(
-                message.chat.id,
-                _("Turnstile WebApp settings updated"),
-                message_thread_id=None,
-            )
-        else:
-            self.bot.send_message(
-                message.chat.id,
-                _("Turnstile WebApp update failed") + f": {error}",
-                message_thread_id=None,
-            )
+        notice = _("Turnstile WebApp settings updated") if ok else (
+            _("Turnstile WebApp update failed") + f": {error}")
+        self._render_turnstile_panel(message.chat.id, message.message_id, notice)
 
     def edit_turnstile_setting(self, message: Message, field: str):
-        """Prompt for one runtime WebApp setting."""
+        """Prompt for one runtime WebApp setting in the existing panel."""
         prompts = {
             "public_url": _("Send the public HTTPS WebApp URL without query parameters."),
             "site_key": _("Send the Cloudflare Turnstile Site Key."),
@@ -653,50 +719,34 @@ class AdminHandler:
         }
         if field not in prompts or not self.check_valid_chat(message):
             return
-        prompt = self.bot.send_message(
-            self.group_id,
-            prompts[field] + "\n" + _("Send /cancel to cancel this operation."),
-            message_thread_id=None,
-        )
-        self.bot.register_next_step_handler(
-            prompt, self.process_turnstile_setting, field)
+        prompt = self._edit_panel(
+            message, prompts[field] + "\n\n" + _("Send /cancel to cancel this operation."))
+        if prompt:
+            self.bot.register_next_step_handler(
+                prompt, self.process_turnstile_setting, field, message.message_id)
 
-    def process_turnstile_setting(self, message: Message, field: str):
-        """Validate, persist, and hot-reload one WebApp setting."""
+    def process_turnstile_setting(self, message: Message, field: str, panel_message_id: int):
+        """Validate, persist, and hot-reload one WebApp setting without chat clutter."""
         if not self.check_valid_chat(message) or not isinstance(message.text, str):
             return
-        if message.text.startswith("/cancel"):
-            self.bot.send_message(self.group_id, _("Operation cancelled"))
+        value = message.text.strip()
+        self._delete_admin_input(message)
+        if value.startswith("/cancel"):
+            self._render_turnstile_panel(
+                message.chat.id, panel_message_id, _("Operation cancelled"))
             return
 
-        value = message.text.strip()
-        if field == "secret_key":
-            try:
-                self.bot.delete_message(message.chat.id, message.message_id)
-            except Exception:
-                pass
         error = self._validate_turnstile_setting(field, value)
         if error:
-            self.bot.send_message(self.group_id, error)
+            self._render_turnstile_panel(message.chat.id, panel_message_id, error)
             return
         if field == "hostname" and value == "-":
             value = ""
 
         ok, reload_error = self.bot_instance.update_turnstile_setting(field, value)
-        if ok:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton(
-                "⬅️" + _("Back"),
-                callback_data=json.dumps({"action": "turnstile_settings"})))
-            self.bot.send_message(
-                self.group_id, _("Turnstile WebApp settings updated"),
-                reply_markup=markup,
-            )
-        else:
-            self.bot.send_message(
-                self.group_id,
-                _("Turnstile WebApp update failed") + f": {reload_error}",
-            )
+        notice = _("Turnstile WebApp settings updated") if ok else (
+            _("Turnstile WebApp update failed") + f": {reload_error}")
+        self._render_turnstile_panel(message.chat.id, panel_message_id, notice)
 
     @staticmethod
     def _validate_turnstile_setting(field: str, value: str):
@@ -719,99 +769,129 @@ class AdminHandler:
         return None
 
     # Time Zone Settings
+    def _time_zone_markup(self):
+        markup = types.InlineKeyboardMarkup()
+        zones = (("UTC", "UTC"), ("Asia/Shanghai", "Shanghai"),
+                 ("Asia/Tokyo", "Tokyo"), ("Europe/London", "London"),
+                 ("America/New_York", "New York"))
+        for value, label in zones:
+            markup.add(types.InlineKeyboardButton(
+                label, callback_data=json.dumps({"action": "set_time_zone", "value": value})))
+        markup.add(types.InlineKeyboardButton(
+            _("Custom time zone"), callback_data=json.dumps({"action": "edit_time_zone"})))
+        markup.add(self._panel_back_button())
+        return markup
+
+    def _render_time_zone_panel(self, chat_id: int, message_id: int, notice: str | None = None):
+        current_time_zone = self.database.get_setting("time_zone") or "UTC"
+        text = _("Current time zone: {}").format(current_time_zone)
+        if notice:
+            text = notice + "\n\n" + text
+        return self._edit_panel_by_id(
+            chat_id, message_id, text, self._time_zone_markup())
+
     def time_zone_settings_menu(self, message: Message):
-        """Display time zone settings menu."""
+        """Display quick time-zone choices in the current panel."""
+        if self.check_valid_chat(message):
+            self._render_time_zone_panel(message.chat.id, message.message_id)
+
+    def edit_time_zone(self, message: Message):
+        """Prompt for a custom time zone in the current panel."""
+        prompt = self._edit_panel(
+            message,
+            _("Current time zone: {}.\nPlease enter the new time zone (e.g., Europe/London):\n\n"
+              "Send /cancel to cancel this operation.").format(
+                  self.database.get_setting("time_zone") or "UTC"),
+        )
+        if prompt:
+            self.bot.register_next_step_handler(
+                prompt, self.validate_time_zone, message.message_id)
+
+    def validate_time_zone(self, message: Message, panel_message_id: int):
+        """Validate a custom time zone and remove the intermediate input."""
         if not self.check_valid_chat(message):
             return
-        current_time_zone = self.database.get_setting('time_zone')
-        msg = self.bot.send_message(
-            text=_("Current time zone: {}.\nPlease enter the new time zone (e.g., Europe/London):\n\n"
-                   "Send /cancel to cancel this operation.").format(current_time_zone),
-            chat_id=message.chat.id,
-            message_thread_id=None)
-        self.bot.register_next_step_handler(msg, self.validate_time_zone)
-
-    def validate_time_zone(self, message: Message):
-        """Validate and set time zone."""
-        time_zone = message.text
-        if (not isinstance(message.text, str)) or message.text.startswith("/cancel"):
-            self.bot.send_message(self.group_id, _("Operation cancelled"))
+        time_zone = message.text if isinstance(message.text, str) else ""
+        self._delete_admin_input(message)
+        if time_zone.startswith("/cancel"):
+            self._render_time_zone_panel(
+                message.chat.id, panel_message_id, _("Operation cancelled"))
             return
         if time_zone in pytz.all_timezones:
-            self.set_time_zone(message, time_zone)
-        else:
-            msg = self.bot.send_message(message.chat.id, _("Invalid time zone. Please try again:"))
-            self.bot.register_next_step_handler(msg, self.validate_time_zone)
+            self.set_time_zone(message, time_zone, panel_message_id)
+            return
+        self._render_time_zone_panel(
+            message.chat.id, panel_message_id, _("Invalid time zone. Please try again:"))
 
-    def set_time_zone(self, message: Message, value: str):
-        """Set the time zone."""
-        self.database.set_setting('time_zone', value)
+    def set_time_zone(self, message: Message, value: str, panel_message_id: int | None = None):
+        """Set the time zone and refresh the existing settings panel."""
+        target_message_id = panel_message_id if panel_message_id is not None else message.message_id
+        if value not in pytz.all_timezones:
+            self._render_time_zone_panel(
+                message.chat.id, target_message_id, _("Invalid time zone. Please try again:"))
+            return
+        self.database.set_setting("time_zone", value)
         self.cache.set("setting_time_zone", value)
-
-        # Update timezone for all components
         self.time_zone = pytz.timezone(value)
         self.auto_response_manager.update_time_zone(self.time_zone)
-
-        # Update bot instance timezone if available
         if self.bot_instance:
             self.bot_instance.update_self_time_zone()
-
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                              callback_data=json.dumps({"action": "menu"})))
-        self.bot.send_message(message.chat.id, _("Time zone updated to {}").format(value),
-                              reply_markup=markup)
+        self._render_time_zone_panel(
+            message.chat.id,
+            panel_message_id if panel_message_id is not None else message.message_id,
+            _("Time zone updated to {}").format(value),
+        )
 
     # Broadcast Message
+    def _broadcast_result_markup(self):
+        markup = types.InlineKeyboardMarkup()
+        markup.add(self._panel_back_button())
+        return markup
+
     def broadcast_message(self, message: Message):
-        """Start broadcast message process."""
+        """Start a broadcast draft in the current admin panel."""
         if not self.check_valid_chat(message):
             return
-        msg = self.bot.send_message(
-            text=_("Please send the content you want to broadcast.\nSend /cancel to cancel this operation."),
-            chat_id=self.group_id, message_thread_id=None)
-        self.bot.register_next_step_handler(msg, self.handle_broadcast_message)
+        self.cache.set("broadcast_panel_message_id", message.message_id, 300)
+        prompt = self._edit_panel(
+            message,
+            _("Please send the content you want to broadcast.\nSend /cancel to cancel this operation."),
+        )
+        if prompt:
+            self.bot.register_next_step_handler(
+                prompt, self.handle_broadcast_message, message.message_id)
 
     def show_host_ip(self, message: Message):
-        """Show host IP information."""
+        """Show host IP information in the current admin panel."""
         if not self.check_valid_chat(message):
             return
         try:
-            headers = {
-                "User-Agent": "curl/8.4.0",
-                "Accept": "*/*"
-            }
+            headers = {"User-Agent": "curl/8.4.0", "Accept": "*/*"}
             with httpx.Client(http2=True, headers=headers, verify=True) as client:
-                res = client.get("https://ipapi.co/json", timeout=5)
-            res.raise_for_status()
-            data = res.json()
-            ip = data.get('ip', _('Unknown'))
-            country = data.get('country_name', _('Unknown'))
-            city = data.get('city', _('Unknown'))
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Failed to retrieve IP information: {e}")
-            self.bot.send_message(self.group_id, _("Failed to retrieve IP information"))
+                response = client.get("https://ipapi.co/json", timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            ip = data.get("ip", _("Unknown"))
+            country = data.get("country_name", _("Unknown"))
+            city = data.get("city", _("Unknown"))
+        except (httpx.HTTPStatusError, httpx.RequestError) as error:
+            logger.error("Failed to retrieve IP information: %s", error)
+            self._edit_panel(
+                message, _("Failed to retrieve IP information"), self._broadcast_result_markup())
             return
-        except httpx.RequestError as e:
-            logger.error(f"Failed to retrieve IP information: {e}")
-            self.bot.send_message(self.group_id, _("Failed to retrieve IP information"))
-            return
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                                callback_data=json.dumps({"action": "menu"})))
-        self.bot.send_message(text=_("Host IP Information") + "\n\n" +
-                                _("IP Address: {}").format(ip) + "\n" +
-                                _("Country: {}").format(country) + "\n" +
-                                _("City: {}").format(city),
-                                chat_id=message.chat.id,
-                                message_thread_id=None,
-                                reply_markup=markup)
+        text = _("Host IP Information") + "\n\n"
+        text += _("IP Address: {}").format(ip) + "\n"
+        text += _("Country: {}").format(country) + "\n"
+        text += _("City: {}").format(city)
+        self._edit_panel(message, text, self._broadcast_result_markup())
 
-    def handle_broadcast_message(self, message: Message):
-        """Handle broadcast message content."""
-        if (isinstance(message.text, str) and message.text.startswith("/cancel")) or \
-                not self.check_valid_chat(message):
-            self.bot.send_message(self.group_id, _("Operation cancelled"))
+    def handle_broadcast_message(self, message: Message, panel_message_id: int):
+        """Create one temporary preview and remove the administrator input."""
+        if not self.check_valid_chat(message):
+            return
+        if isinstance(message.text, str) and message.text.startswith("/cancel"):
+            self._delete_admin_input(message)
+            self.cancel_broadcast_panel(message.chat.id, panel_message_id, _("Operation cancelled"))
             return
 
         content_type = message.content_type
@@ -826,161 +906,177 @@ class AdminHandler:
         elif content_type == "sticker":
             content = message.sticker.file_id
         else:
-            self.bot.send_message(self.group_id, _("Unsupported message type"))
+            self._delete_admin_input(message)
+            self._edit_panel_by_id(
+                message.chat.id, panel_message_id, _("Unsupported message type"),
+                self._broadcast_result_markup())
             return
 
-        # Store the message content and type in cache
+        self._delete_admin_input(message)
         self.cache.set("broadcast_content", content, 300)
         self.cache.set("broadcast_content_type", content_type, 300)
-
-        # Send preview message with confirmation button
+        self.cache.set("broadcast_panel_message_id", panel_message_id, 300)
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("✅" + _("Confirm"),
-                                              callback_data=json.dumps({"action": "confirm_broadcast"})))
-        markup.add(types.InlineKeyboardButton("❌" + _("Cancel"),
-                                              callback_data=json.dumps({"action": "cancel_broadcast"})))
-
+        markup.row(
+            types.InlineKeyboardButton(
+                "✅" + _("Confirm"), callback_data=json.dumps({"action": "confirm_broadcast"})),
+            types.InlineKeyboardButton(
+                "❌" + _("Cancel"), callback_data=json.dumps({"action": "cancel_broadcast"})),
+        )
         if content_type == "text":
-            self.bot.send_message(self.group_id, content, reply_markup=markup)
+            preview = self.bot.send_message(self.group_id, content, reply_markup=markup)
         elif content_type == "photo":
-            self.bot.send_photo(self.group_id, content, reply_markup=markup)
+            preview = self.bot.send_photo(self.group_id, content, reply_markup=markup)
         elif content_type == "document":
-            self.bot.send_document(self.group_id, content, reply_markup=markup)
+            preview = self.bot.send_document(self.group_id, content, reply_markup=markup)
         elif content_type == "video":
-            self.bot.send_video(self.group_id, content, reply_markup=markup)
-        elif content_type == "sticker":
-            self.bot.send_sticker(self.group_id, content, reply_markup=markup)
+            preview = self.bot.send_video(self.group_id, content, reply_markup=markup)
+        else:
+            preview = self.bot.send_sticker(self.group_id, content, reply_markup=markup)
+        self.cache.set("broadcast_preview_message_id", preview.message_id, 300)
 
-    def confirm_broadcast_message(self, call):
-        """Confirm and send broadcast message."""
+    def _clear_broadcast_draft(self):
+        for key in (
+                "broadcast_content", "broadcast_content_type", "broadcast_panel_message_id",
+                "broadcast_preview_message_id"):
+            self.cache.delete(key)
+
+    def cancel_broadcast_panel(self, chat_id: int, panel_message_id: int, notice: str):
+        self._clear_broadcast_draft()
+        self._edit_panel_by_id(chat_id, panel_message_id, notice, self._broadcast_result_markup())
+
+    def confirm_broadcast_message(self, message: Message):
+        """Send a confirmed broadcast and clean up the temporary preview."""
         content = self.cache.get("broadcast_content")
         content_type = self.cache.get("broadcast_content_type")
-
-        if content is None or content_type is None:
-            self.bot.send_message(self.group_id,
-                                  _("The operation has timed out. Please initiate the process again."))
+        panel_message_id = self.cache.get("broadcast_panel_message_id")
+        if content is None or content_type is None or panel_message_id is None:
+            self._delete_preview(message)
             return
 
         with sqlite3.connect(self.db_path) as db:
-            db_cursor = db.cursor()
-            db_cursor.execute("SELECT user_id, thread_id FROM topics")
-            users = db_cursor.fetchall()
-            for user in users:
-                user_id, thread_id = user
-                try:
-                    if content_type == "text":
-                        self.bot.send_message(user_id, content)
-                    elif content_type == "photo":
-                        self.bot.send_photo(user_id, content)
-                    elif content_type == "document":
-                        self.bot.send_document(user_id, content)
-                    elif content_type == "video":
-                        self.bot.send_video(user_id, content)
-                    elif content_type == "sticker":
-                        self.bot.send_sticker(user_id, content)
-                except ApiTelegramException as e:
-                    self.bot.send_message(self.group_id,
-                                          _("Failed to send message to user {}").format(user_id))
-                    logger.error(_("Failed to send message to user {}").format(user_id))
+            users = db.execute("SELECT user_id FROM topics").fetchall()
+        for (user_id,) in users:
+            try:
+                if content_type == "text":
+                    self.bot.send_message(user_id, content)
+                elif content_type == "photo":
+                    self.bot.send_photo(user_id, content)
+                elif content_type == "document":
+                    self.bot.send_document(user_id, content)
+                elif content_type == "video":
+                    self.bot.send_video(user_id, content)
+                else:
+                    self.bot.send_sticker(user_id, content)
+            except ApiTelegramException:
+                logger.exception("Failed to send broadcast to user %s", user_id)
 
-        self.bot.send_message(self.group_id, _("Broadcast message sent successfully."))
-        self.cache.delete("broadcast_content")
-        self.cache.delete("broadcast_content_type")
+        self._delete_preview(message)
+        self._clear_broadcast_draft()
+        self._edit_panel_by_id(
+            message.chat.id, panel_message_id,
+            _("Broadcast message sent successfully."), self._broadcast_result_markup())
 
-    def cancel_broadcast(self):
-        """Cancel broadcast operation."""
-        self.cache.delete("broadcast_content")
-        self.cache.delete("broadcast_content_type")
+    def _delete_preview(self, message: Message):
+        try:
+            self.bot.delete_message(message.chat.id, message.message_id)
+        except ApiTelegramException:
+            logger.debug("Could not delete broadcast preview %s", message.message_id)
+
+    def cancel_broadcast(self, message: Message):
+        """Cancel a broadcast preview and restore the original admin panel."""
+        panel_message_id = self.cache.get("broadcast_panel_message_id")
+        self._delete_preview(message)
+        self._clear_broadcast_draft()
+        if panel_message_id is not None:
+            self._edit_panel_by_id(
+                message.chat.id, panel_message_id,
+                _("Broadcast cancelled"), self._broadcast_result_markup())
 
     # Spam Keywords Management
-    def spam_keywords_menu(self, message: Message):
-        """Display spam keywords management menu."""
+    def _render_spam_keywords_panel(self, chat_id: int, message_id: int, notice: str | None = None):
         if not self.spam_keyword_manager:
-            self.bot.send_message(self.group_id, _("Spam keywords management is not available"))
-            return
+            return self._edit_panel_by_id(
+                chat_id, message_id, _("Spam keywords management is not available"))
 
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("➕" + _("Add Keyword"),
-                                              callback_data=json.dumps({"action": "add_spam_keyword"})))
-        markup.add(types.InlineKeyboardButton("📋" + _("View Keywords"),
-                                              callback_data=json.dumps({"action": "view_spam_keywords"})))
-        markup.add(types.InlineKeyboardButton("🔄" + _("Reset Spam Topic"),
-                                              callback_data=json.dumps({"action": "reset_spam_topic"})))
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                              callback_data=json.dumps({"action": "menu"})))
+        markup.add(types.InlineKeyboardButton(
+            "➕" + _("Add Keyword"),
+            callback_data=json.dumps({"action": "add_spam_keyword"})))
+        markup.add(types.InlineKeyboardButton(
+            "📋" + _("View Keywords"),
+            callback_data=json.dumps({"action": "view_spam_keywords"})))
+        markup.add(types.InlineKeyboardButton(
+            "🔄" + _("Reset Spam Topic"),
+            callback_data=json.dumps({"action": "reset_spam_topic"})))
+        markup.add(self._panel_back_button())
 
         keyword_count = self.spam_keyword_manager.get_keyword_count()
         spam_topic_id = self.cache.get("spam_topic_id")
-
         text = _("Spam Keywords Management") + "\n\n"
         text += _("Total keywords: {}").format(keyword_count) + "\n"
-        text += _("Spam Topic ID: {}").format(spam_topic_id if spam_topic_id else _("Not set")) + "\n\n"
+        text += _("Spam Topic ID: {}").format(
+            spam_topic_id if spam_topic_id else _("Not set")) + "\n\n"
         text += _("Messages containing these keywords will be forwarded to the spam topic silently.")
+        if notice:
+            text = notice + "\n\n" + text
+        return self._edit_panel_by_id(chat_id, message_id, text, markup)
 
-        self.bot.send_message(text=text,
-                              chat_id=message.chat.id,
-                              message_thread_id=None,
-                              reply_markup=markup)
+    def spam_keywords_menu(self, message: Message):
+        """Display spam keyword controls in the existing admin panel."""
+        if self.check_valid_chat(message):
+            self._render_spam_keywords_panel(message.chat.id, message.message_id)
 
     def add_spam_keyword(self, message: Message):
-        """Start the process of adding a spam keyword."""
+        """Prompt for a keyword in the current panel."""
         if not self.check_valid_chat(message):
             return
+        prompt = self._edit_panel(
+            message,
+            _("Please send the keyword you want to add to the spam filter.\n"
+              "Send /cancel to cancel this operation."),
+        )
+        if prompt:
+            self.bot.register_next_step_handler(
+                prompt, self.process_add_spam_keyword, message.message_id)
 
-        msg = self.bot.edit_message_text(
-            text=_("Please send the keyword you want to add to the spam filter.\n"
-                   "Send /cancel to cancel this operation."),
-            chat_id=self.group_id,
-            message_id=message.message_id)
-        self.bot.register_next_step_handler(msg, self.process_add_spam_keyword)
-
-    def process_add_spam_keyword(self, message: Message):
-        """Process adding a spam keyword."""
-        # Must be in the correct group and main topic
+    def process_add_spam_keyword(self, message: Message, panel_message_id: int):
+        """Save a keyword and remove the administrator's intermediate message."""
         if not self.check_valid_chat(message):
             logger.warning(
-                f"Keyword add attempt from wrong context: chat_id={message.chat.id}, thread_id={message.message_thread_id}")
+                "Keyword add attempt from wrong context: chat_id=%s, thread_id=%s",
+                message.chat.id, message.message_thread_id)
             return
 
-        if isinstance(message.text, str) and message.text.startswith("/cancel"):
-            self.bot.send_message(self.group_id, _("Operation cancelled"))
+        text = message.text if message.content_type == "text" else None
+        self._delete_admin_input(message)
+        if text is None:
+            self._render_spam_keywords_panel(
+                message.chat.id, panel_message_id, _("Invalid input"))
+            return
+        if text.startswith("/cancel"):
+            self._render_spam_keywords_panel(
+                message.chat.id, panel_message_id, _("Operation cancelled"))
             return
 
-        if message.content_type != "text":
-            self.bot.send_message(self.group_id, _("Invalid input"))
-            return
-
-        keyword = message.text.strip()
+        keyword = text.strip()
         if not keyword:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                                  callback_data=json.dumps({"action": "spam_keywords"})))
-            self.bot.send_message(self.group_id, _("Keyword cannot be empty"), reply_markup=markup)
+            self._render_spam_keywords_panel(
+                message.chat.id, panel_message_id, _("Keyword cannot be empty"))
             return
 
         try:
-            result = self.spam_keyword_manager.add_keyword(keyword)
-
-            if result:
-                markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                                      callback_data=json.dumps({"action": "spam_keywords"})))
-                self.bot.send_message(self.group_id,
-                                      _("Keyword added: {}").format(keyword),
-                                      reply_markup=markup)
+            if self.spam_keyword_manager.add_keyword(keyword):
+                notice = _("Keyword added: {}").format(keyword)
             else:
-                markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                                      callback_data=json.dumps({"action": "spam_keywords"})))
-                self.bot.send_message(self.group_id,
-                                      _("Keyword already exists or is invalid"),
-                                      reply_markup=markup)
-        except Exception as e:
-            logger.error(f"Error adding spam keyword: {e}")
-            from traceback import print_exc
-            print_exc()
-            self.bot.send_message(self.group_id,
-                                  _("Failed to add keyword: {}").format(str(e)))
+                notice = _("Keyword already exists or is invalid")
+            self._render_spam_keywords_panel(message.chat.id, panel_message_id, notice)
+        except Exception as error:
+            logger.exception("Could not add spam keyword")
+            self._render_spam_keywords_panel(
+                message.chat.id, panel_message_id,
+                _("Failed to add keyword: {}").format(str(error)))
+
 
     def view_spam_keywords(self, message: Message, page: int = 1, page_size: int = 10):
         """Display paginated list of spam keywords."""
@@ -1105,126 +1201,97 @@ class AdminHandler:
                                        reply_markup=markup)
 
     # Blocked User Reply Settings
-    def blocked_reply_settings_menu(self, message: Message):
-        """Display blocked user auto-reply settings menu."""
-        if not self.check_valid_chat(message):
-            return
-
-        current_enabled = self.database.get_setting('blocked_user_reply_enabled')
-        current_message = self.database.get_setting('blocked_user_reply_message')
-
+    def _render_blocked_reply_panel(self, chat_id: int, message_id: int, notice: str | None = None):
+        current_enabled = self.database.get_setting("blocked_user_reply_enabled")
+        current_message = self.database.get_setting("blocked_user_reply_message")
         markup = types.InlineKeyboardMarkup()
-
-        # Enable/Disable toggle
-        if current_enabled == 'enable':
+        if current_enabled == "enable":
             markup.add(types.InlineKeyboardButton(
                 "🔕 " + _("Disable Auto Reply"),
-                callback_data=json.dumps({"action": "set_blocked_reply_enabled", "value": "disable"})
-            ))
+                callback_data=json.dumps({"action": "set_blocked_reply_enabled", "value": "disable"})))
         else:
             markup.add(types.InlineKeyboardButton(
                 "🔔 " + _("Enable Auto Reply"),
-                callback_data=json.dumps({"action": "set_blocked_reply_enabled", "value": "enable"})
-            ))
-
-        # Edit message button
+                callback_data=json.dumps({"action": "set_blocked_reply_enabled", "value": "enable"})))
         markup.add(types.InlineKeyboardButton(
             "✏️ " + _("Edit Reply Message"),
-            callback_data=json.dumps({"action": "edit_blocked_reply_message"})
-        ))
-
-        # Clear message button
+            callback_data=json.dumps({"action": "edit_blocked_reply_message"})))
         markup.add(types.InlineKeyboardButton(
             "🗑️ " + _("Clear Reply Message"),
-            callback_data=json.dumps({"action": "clear_blocked_reply_message"})
-        ))
-
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                              callback_data=json.dumps({"action": "menu"})))
+            callback_data=json.dumps({"action": "clear_blocked_reply_message"})))
+        markup.add(self._panel_back_button())
 
         text = _("Blocked User Auto Reply Settings") + "\n\n"
-        text += _("Status: {}").format(_("Enabled") if current_enabled == 'enable' else _("Disabled")) + "\n"
+        text += _("Status: {}").format(
+            _("Enabled") if current_enabled == "enable" else _("Disabled")) + "\n"
         text += _("Current message: {}").format(
-            current_message if current_message else _("Not set (no reply will be sent)")
-        ) + "\n\n"
+            current_message if current_message else _("Not set (no reply will be sent)")) + "\n\n"
         text += _("When enabled, blocked users will receive this message when they try to send messages.")
+        if notice:
+            text = notice + "\n\n" + text
+        return self._edit_panel_by_id(chat_id, message_id, text, markup)
 
-        self.bot.send_message(text=text,
-                              chat_id=message.chat.id,
-                              message_thread_id=None,
-                              reply_markup=markup)
+    def blocked_reply_settings_menu(self, message: Message):
+        """Display blocked-user auto-reply controls in the existing panel."""
+        if self.check_valid_chat(message):
+            self._render_blocked_reply_panel(message.chat.id, message.message_id)
 
     def set_blocked_reply_enabled(self, message: Message, value: str):
-        """Toggle blocked user auto-reply."""
-        self.database.set_setting('blocked_user_reply_enabled', value)
+        """Toggle blocked-user auto reply without creating a result message."""
+        if value not in {"enable", "disable"}:
+            return
+        self.database.set_setting("blocked_user_reply_enabled", value)
         self.cache.set("setting_blocked_user_reply_enabled", value)
-
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                              callback_data=json.dumps({"action": "blocked_reply_settings"})))
-
-        status_text = _("Enabled") if value == "enable" else _("Disabled")
-        self.bot.edit_message_text(_("Blocked user auto-reply has been {}.").format(status_text),
-                                   message.chat.id, message.message_id,
-                                   reply_markup=markup)
+        status = _("Enabled") if value == "enable" else _("Disabled")
+        self._render_blocked_reply_panel(
+            message.chat.id, message.message_id,
+            _("Blocked user auto-reply has been {}.").format(status))
 
     def edit_blocked_reply_message(self, message: Message):
-        """Start editing blocked user reply message."""
-        msg = self.bot.edit_message_text(
-            text=_("Please send the message to reply to blocked users.\n"
-                   "Send /cancel to cancel this operation.\n\n"
-                   "Note: You can send an empty message to disable auto-reply."),
-            chat_id=self.group_id,
-            message_id=message.message_id)
-        self.bot.register_next_step_handler(msg, self.process_edit_blocked_reply_message)
+        """Prompt for the blocked-user reply in the current panel."""
+        prompt = self._edit_panel(
+            message,
+            _("Please send the message to reply to blocked users.\n"
+              "Send /cancel to cancel this operation.\n\n"
+              "Note: You can send an empty message to disable auto-reply."),
+        )
+        if prompt:
+            self.bot.register_next_step_handler(
+                prompt, self.process_edit_blocked_reply_message, message.message_id)
 
-    def process_edit_blocked_reply_message(self, message: Message):
-        """Process blocked user reply message editing."""
+    def process_edit_blocked_reply_message(self, message: Message, panel_message_id: int):
+        """Store a blocked-user reply and delete the intermediate input."""
         if not self.check_valid_chat(message):
             logger.warning(
-                f"Blocked reply edit from wrong context: chat_id={message.chat.id}, thread_id={message.message_thread_id}")
+                "Blocked reply edit from wrong context: chat_id=%s, thread_id=%s",
+                message.chat.id, message.message_thread_id)
             return
 
-        if isinstance(message.text, str) and message.text.startswith("/cancel"):
-            self.bot.send_message(self.group_id, _("Operation cancelled"))
+        text = message.text if message.content_type == "text" else None
+        self._delete_admin_input(message)
+        if text is None:
+            self._render_blocked_reply_panel(
+                message.chat.id, panel_message_id, _("Invalid input"))
+            return
+        if text.startswith("/cancel"):
+            self._render_blocked_reply_panel(
+                message.chat.id, panel_message_id, _("Operation cancelled"))
             return
 
-        if message.content_type != "text":
-            self.bot.send_message(self.group_id, _("Invalid input"))
-            return
-
-        reply_message = message.text.strip()
-        # Allow empty message to disable reply
-        if not reply_message:
-            reply_message = None
-
-        self.database.set_setting('blocked_user_reply_message', reply_message)
+        reply_message = text.strip() or None
+        self.database.set_setting("blocked_user_reply_message", reply_message)
         self.cache.set("setting_blocked_user_reply_message", reply_message)
-
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                              callback_data=json.dumps({"action": "blocked_reply_settings"})))
-
-        if reply_message:
-            self.bot.send_message(self.group_id,
-                                  _("Blocked user reply message updated: {}").format(reply_message),
-                                  reply_markup=markup)
-        else:
-            self.bot.send_message(self.group_id,
-                                  _("Blocked user reply message cleared. No auto-reply will be sent."),
-                                  reply_markup=markup)
+        notice = (_("Blocked user reply message updated: {}").format(reply_message)
+                  if reply_message else
+                  _("Blocked user reply message cleared. No auto-reply will be sent."))
+        self._render_blocked_reply_panel(message.chat.id, panel_message_id, notice)
 
     def clear_blocked_reply_message(self, message: Message):
-        """Clear blocked user reply message."""
-        self.database.set_setting('blocked_user_reply_message', None)
+        """Clear the blocked-user reply and retain its settings panel."""
+        self.database.set_setting("blocked_user_reply_message", None)
         self.cache.set("setting_blocked_user_reply_message", None)
-
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
-                                              callback_data=json.dumps({"action": "blocked_reply_settings"})))
-        self.bot.edit_message_text(_("Blocked user reply message cleared."),
-                                   message.chat.id, message.message_id,
-                                   reply_markup=markup)
+        self._render_blocked_reply_panel(
+            message.chat.id, message.message_id, _("Blocked user reply message cleared."))
 
     # Spam Topic Management
     def reset_spam_topic(self, message: Message):

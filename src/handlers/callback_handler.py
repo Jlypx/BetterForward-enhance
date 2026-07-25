@@ -33,9 +33,7 @@ class CallbackHandler:
             logger.error(_("Invalid JSON data received"))
             return
 
-        self.bot.answer_callback_query(call.id)
-
-        # User end callbacks
+        # User end callbacks answer themselves so they can provide a meaningful status.
         if action == "verify_button":
             self._handle_verify_button(call, data)
             return
@@ -43,6 +41,8 @@ class CallbackHandler:
         if action == "appeal_request":
             self._handle_appeal_request(call, data)
             return
+
+        self.bot.answer_callback_query(call.id)
 
         # Admin end callbacks
         if call.message.chat.id != self.group_id:
@@ -61,97 +61,108 @@ class CallbackHandler:
             pass
 
     def _handle_appeal_request(self, call: types.CallbackQuery, data: dict):
-        """Handle user appeal request after being auto-blocked. Requires verification first."""
-        user_id = data.get("user_id")
-        if (not user_id or call.from_user.id != user_id or
-                call.message.chat.id != user_id):
+        """Start a user-bound verification challenge before submitting an appeal."""
+        try:
+            user_id = int(data.get("user_id"))
+        except (TypeError, ValueError):
+            self.bot.answer_callback_query(call.id, _("Invalid user ID"), show_alert=True)
+            return
+        if call.from_user.id != user_id or call.message.chat.id != user_id:
             logger.warning("Rejected appeal callback from user %s", call.from_user.id)
-            self.bot.answer_callback_query(call.id, _("Invalid user ID"))
+            self.bot.answer_callback_query(call.id, _("Invalid user ID"), show_alert=True)
             return
 
         import sqlite3
 
-        with sqlite3.connect(self.db_path) as db:
-            cursor = db.cursor()
+        try:
+            with sqlite3.connect(self.db_path) as db:
+                cursor = db.cursor()
+                existing_appeal = cursor.execute(
+                    "SELECT status FROM appeal_requests WHERE user_id = ?",
+                    (user_id,)
+                ).fetchone()
+                if existing_appeal:
+                    status = existing_appeal[0]
+                    if status == "pending":
+                        self.bot.answer_callback_query(
+                            call.id, _("Your appeal is already pending review"), show_alert=True)
+                        return
+                    if status == "approved":
+                        self.bot.answer_callback_query(
+                            call.id, _("Your appeal was already approved"), show_alert=True)
+                        return
+                    if status == "rejected":
+                        self.bot.answer_callback_query(
+                            call.id,
+                            _("Your appeal was already rejected. No further appeals allowed."),
+                            show_alert=True,
+                        )
+                        return
 
-            # Check if user has already appealed
-            existing_appeal = cursor.execute(
-                "SELECT status FROM appeal_requests WHERE user_id = ?",
-                (user_id,)
-            ).fetchone()
-
-            if existing_appeal:
-                status = existing_appeal[0]
-                if status == 'pending':
-                    self.bot.answer_callback_query(call.id, _("Your appeal is already pending review"))
+                is_blocked = cursor.execute(
+                    """SELECT block_reason FROM blocked_users
+                       WHERE user_id = ?
+                         AND (blocked_until IS NULL OR blocked_until > CURRENT_TIMESTAMP)""",
+                    (user_id,)
+                ).fetchone()
+                if not is_blocked:
+                    self.bot.answer_callback_query(call.id, _("You are not blocked"), show_alert=True)
                     return
-                elif status == 'approved':
-                    self.bot.answer_callback_query(call.id, _("Your appeal was already approved"))
-                    return
-                elif status == 'rejected':
-                    self.bot.answer_callback_query(call.id, _("Your appeal was already rejected. No further appeals allowed."))
-                    return
 
-            # Check if user is actually blocked
-            is_blocked = cursor.execute(
-                """SELECT block_reason FROM blocked_users
-                   WHERE user_id = ?
-                     AND (blocked_until IS NULL OR blocked_until > CURRENT_TIMESTAMP)""",
-                (user_id,)
-            ).fetchone()
-
-            if not is_blocked:
-                self.bot.answer_callback_query(call.id, _("You are not blocked"))
-                return
-
-            # Set appeal verification mode flag
-            self.admin_handler.cache.set(f"appeal_verification_{user_id}", True, 300)  # 5 minutes timeout
-
-            # Generate captcha challenge based on current settings
-            captcha_type = self.admin_handler.cache.get("setting_captcha")
+            self.admin_handler.cache.set(f"appeal_verification_{user_id}", True, 300)
             service = self.captcha_manager.webapp_service
+            captcha_type = self.admin_handler.cache.get("setting_captcha")
             if captcha_type == "webapp" and (not service or not service.is_enabled()):
                 captcha_type = "image"
             if captcha_type not in {"webapp", "math", "image"}:
-                captcha_type = "webapp" if service and service.is_enabled() else "image"
-            captcha_manager = self.captcha_manager
+                captcha_type = "webapp" if service and service.is_enabled() else "math"
 
-            # Generate the captcha
+            if captcha_type == "webapp":
+                challenge_url = service.create_challenge(user_id, purpose="appeal")
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton(
+                    _("Verify"), web_app=types.WebAppInfo(url=challenge_url)))
+                challenge_text = _(
+                    "Appeal verification started. Complete the challenge below.")
+                self.bot.edit_message_text(
+                    challenge_text,
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=markup,
+                )
+            elif captcha_type == "math":
+                captcha = self.captcha_manager.generate_captcha(user_id, "math")
+                self.bot.edit_message_text(
+                    _("Appeal verification started. Complete the challenge below.") + "\n\n" + captcha,
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=None,
+                )
+            else:
+                self.captcha_manager.generate_captcha(user_id, "image")
+                self.bot.edit_message_text(
+                    _("Appeal verification started. Complete the challenge below."),
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=None,
+                )
+
             self.bot.answer_callback_query(call.id, _("Please complete verification to submit appeal"))
-
-            match captcha_type:
-                case "webapp":
-                    captcha_manager.generate_captcha(
-                        user_id, captcha_type, purpose="appeal")
-                    self.bot.send_message(
-                        user_id,
-                        _("Complete the WebApp verification to submit your appeal.")
-                    )
-                case "math":
-                    captcha = captcha_manager.generate_captcha(user_id, captcha_type)
-                    self.bot.send_message(
-                        user_id,
-                        _("🔐 Appeal Verification Required\n\n"
-                          "To submit your appeal, please solve the following math problem and send the answer:\n\n") + captcha
-                    )
-                case "image":
-                    captcha_manager.generate_captcha(user_id, captcha_type)
-                    self.bot.send_message(
-                        user_id,
-                        _("🔐 Appeal Verification Required\n\n"
-                          "To submit your appeal, please complete the verification challenge below.")
-                    )
-                case _:
-                    # Default to math if setting is invalid
-                    captcha = captcha_manager.generate_captcha(user_id, "math")
-                    self.bot.send_message(
-                        user_id,
-                        _("🔐 Appeal Verification Required\n\n"
-                          "To submit your appeal, please solve the following math problem and send the answer:\n\n") + captcha
-                    )
-
-
-            logger.info(_("Appeal request submitted by user {}").format(user_id))
+            logger.info("Started appeal verification for user %s using %s", user_id, captcha_type)
+        except Exception:
+            self.admin_handler.cache.delete(f"appeal_verification_{user_id}")
+            logger.exception("Could not start appeal verification for user %s", user_id)
+            error_text = _("Could not start appeal verification. Please try again later.")
+            self.bot.answer_callback_query(call.id, error_text, show_alert=True)
+            try:
+                self.bot.edit_message_text(
+                    error_text,
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=None,
+                )
+            except Exception:
+                logger.exception("Could not show appeal verification failure to user %s", user_id)
 
     def _handle_admin_callback(self, call: types.CallbackQuery, action: str, data: dict):
         """Handle admin callbacks."""
@@ -169,7 +180,8 @@ class CallbackHandler:
             case "start_add_auto_reply":
                 self.admin_handler.add_auto_response(call.message)
             case "add_auto_reply":
-                self.admin_handler.process_add_auto_reply(call.message)
+                self.admin_handler._finish_auto_response(
+                    call.message.chat.id, call.message.message_id)
             case "manage_auto_reply":
                 self.admin_handler.manage_auto_reply(call.message, page=data.get("page", 1))
             case "select_auto_reply":
@@ -217,14 +229,17 @@ class CallbackHandler:
             case "broadcast_message":
                 self.admin_handler.broadcast_message(call.message)
             case "confirm_broadcast":
-                self.bot.delete_message(self.group_id, call.message.message_id)
-                self.admin_handler.confirm_broadcast_message(call)
+                self.admin_handler.confirm_broadcast_message(call.message)
             case "cancel_broadcast":
-                self.bot.delete_message(self.group_id, call.message.message_id)
-                self.bot.send_message(self.group_id, _("Broadcast cancelled"))
-                self.admin_handler.cancel_broadcast()
+                self.admin_handler.cancel_broadcast(call.message)
             case "time_zone_settings":
                 self.admin_handler.time_zone_settings_menu(call.message)
+            case "set_time_zone":
+                self.admin_handler.set_time_zone(call.message, data.get("value", ""))
+            case "edit_time_zone":
+                self.admin_handler.edit_time_zone(call.message)
+            case "set_verification":
+                self.command_handler.set_verification_status(call.message, data.get("value", ""))
             case "confirm_terminate":
                 try:
                     self.command_handler.terminate_thread(thread_id=data.get("thread_id"),

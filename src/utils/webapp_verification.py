@@ -318,7 +318,7 @@ class TurnstileWebAppService:
                 },
                 timeout=5,
             )
-            response = response.raise_for_status()
+            response.raise_for_status()
             result = response.json()
         except (httpx.HTTPError, ValueError) as error:
             logger.warning("Turnstile Siteverify request failed: %s", error)
