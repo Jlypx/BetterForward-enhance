@@ -124,6 +124,9 @@ msgid ""
 "\n"
 "You can now send messages again. Please complete the verification process."
 msgstr ""
+"✅ お知らせ: 管理者が異議申し立てを承認しました。\n"
+"\n"
+"メッセージを再び送信できます。認証手続きを完了してください。"
 
 #: src/handlers/callback_handler.py:356
 #, python-brace-format
@@ -134,11 +137,16 @@ msgid ""
 "Approved by: {} (ID: {})\n"
 "Action: User unblocked and verification attempts reset"
 msgstr ""
+"✅ 異議申し立てを承認しました\n"
+"\n"
+"ユーザーID: {}\n"
+"承認者: {}（ID: {}）\n"
+"処理: ユーザーのブロックを解除し、認証試行回数をリセットしました"
 
 #: src/handlers/callback_handler.py:366
 #, python-brace-format
 msgid "Appeal approved for user {} by admin {}"
-msgstr ""
+msgstr "管理者 {} がユーザー {} の異議申し立てを承認しました"
 
 #: src/handlers/callback_handler.py:388
 msgid ""
@@ -146,6 +154,9 @@ msgid ""
 "\n"
 "The block remains in effect. No further appeals are allowed."
 msgstr ""
+"❌ 管理者が異議申し立てを審査し、却下しました。\n"
+"\n"
+"ブロックは継続されます。これ以上の異議申し立てはできません。"
 
 #: src/handlers/callback_handler.py:394
 #, python-brace-format
@@ -156,11 +167,16 @@ msgid ""
 "Rejected by: {} (ID: {})\n"
 "Action: User remains blocked"
 msgstr ""
+"❌ 異議申し立てを却下しました\n"
+"\n"
+"ユーザーID: {}\n"
+"却下者: {}（ID: {}）\n"
+"処理: ユーザーは引き続きブロックされています"
 
 #: src/handlers/callback_handler.py:404
 #, python-brace-format
 msgid "Appeal rejected for user {} by admin {}"
-msgstr ""
+msgstr "管理者 {} がユーザー {} の異議申し立てを却下しました"
 
 #: src/handlers/admin_handler.py:83 src/handlers/admin_handler.py:183
 msgid "Auto Reply"
@@ -943,7 +959,7 @@ msgstr "✅ 申し立てモードを変更しました: {}"
 msgid ""
 "I'm a bot that forwards messages, so please just tell me what you want to "
 "say."
-msgstr ""
+msgstr "私はメッセージ転送ボットです。送信したい内容をそのまま入力してください。"
 
 #: src/handlers/command_handler.py:61
 msgid "This command is not available in the main chat."
@@ -956,7 +972,7 @@ msgstr "このコマンドは管理者ユーザーのみが使用できる。"
 
 #: src/handlers/command_handler.py:92
 msgid "Delete This Thread"
-msgstr ""
+msgstr "このトピックを削除"
 
 #: src/handlers/command_handler.py:96
 msgid "User banned"
@@ -965,12 +981,12 @@ msgstr "ユーザーを禁止された"
 #: src/handlers/command_handler.py:113
 #, python-brace-format
 msgid "Unbanning user {} via replied forwarded message"
-msgstr ""
+msgstr "返信した転送メッセージからユーザー {} のブロックを解除します"
 
 #: src/handlers/command_handler.py:124
 #, python-brace-format
 msgid "Unbanning user {} via parsed message text"
-msgstr ""
+msgstr "解析したメッセージ本文からユーザー {} のブロックを解除します"
 
 #: src/handlers/command_handler.py:134
 msgid ""
@@ -980,6 +996,11 @@ msgid ""
 "\n"
 "Or reply to a message in Blocked Messages topic with /unban"
 msgstr ""
+"ユーザーIDが無効です。\n"
+"正しい使い方:```\n"
+"/unban <ユーザーID>```\n"
+"\n"
+"または、ブロック済みメッセージのトピックで対象メッセージに /unban を返信してください"
 
 #: src/handlers/command_handler.py:153 src/handlers/command_handler.py:187
 #: src/handlers/command_handler.py:190
@@ -989,7 +1010,7 @@ msgstr "ユーザーを解禁された"
 #: src/handlers/command_handler.py:166
 #, python-brace-format
 msgid "User {} is not blocked"
-msgstr ""
+msgstr "ユーザー {} はブロックされていません"
 
 #: src/handlers/command_handler.py:231
 msgid "Terminating thread"
@@ -1001,19 +1022,19 @@ msgstr "メインスレッドを削除できない"
 
 #: src/handlers/command_handler.py:276
 msgid "Are you sure you want to terminate this thread?"
-msgstr ""
+msgstr "このトピックを終了してもよろしいですか？"
 
 #: src/handlers/command_handler.py:286
 msgid "Please reply to the message you want to delete"
-msgstr ""
+msgstr "削除するメッセージに返信してください"
 
 #: src/handlers/command_handler.py:305 src/handlers/message_handler.py:607
 msgid "[Alert]"
-msgstr ""
+msgstr "[通知]"
 
 #: src/handlers/command_handler.py:305
 msgid "Message deleted by user"
-msgstr ""
+msgstr "ユーザーがメッセージを削除しました"
 
 #: src/handlers/command_handler.py:326
 msgid "Mark verified"
@@ -1037,7 +1058,7 @@ msgstr "認証状態を設定"
 
 #: src/handlers/command_handler.py:398
 msgid "Edited at"
-msgstr ""
+msgstr "編集日時"
 
 #: src/handlers/message_handler.py:69
 #, python-brace-format
@@ -1047,67 +1068,67 @@ msgstr "{} からのメッセージを受信した：{}、タイプ：{}"
 #: src/handlers/message_handler.py:75
 #, python-brace-format
 msgid "Message from user {} blocked by captcha ({:.2f}ms)"
-msgstr ""
+msgstr "ユーザー {} からのメッセージを認証により拒否しました（{:.2f}ms）"
 
 #: src/handlers/message_handler.py:92
 msgid "Spam topic not configured, using main topic"
-msgstr ""
+msgstr "スパムトピックが未設定のため、メイントピックを使用します"
 
 #: src/handlers/message_handler.py:100 src/handlers/message_handler.py:135
 msgid "[Spam Detected]"
-msgstr ""
+msgstr "[スパムを検出]"
 
 #: src/handlers/message_handler.py:101 src/handlers/message_handler.py:136
 #: src/handlers/message_handler.py:158
 msgid "User ID"
-msgstr ""
+msgstr "ユーザーID"
 
 #: src/handlers/message_handler.py:105 src/handlers/message_handler.py:139
 msgid "Detector"
-msgstr ""
+msgstr "検出器"
 
 #: src/handlers/message_handler.py:107 src/handlers/message_handler.py:141
 msgid "Method"
-msgstr ""
+msgstr "方式"
 
 #: src/handlers/message_handler.py:109 src/handlers/message_handler.py:143
 msgid "Matched"
-msgstr ""
+msgstr "一致内容"
 
 #: src/handlers/message_handler.py:111
 msgid "Confidence"
-msgstr ""
+msgstr "信頼度"
 
 #: src/handlers/message_handler.py:123
 msgid "Spam topic not found, attempting to recreate..."
-msgstr ""
+msgstr "スパムトピックが見つかりません。再作成を試みます..."
 
 #: src/handlers/message_handler.py:128
 msgid "Spam topic recreated, retrying message forward..."
-msgstr ""
+msgstr "スパムトピックを再作成しました。メッセージ転送を再試行します..."
 
 #: src/handlers/message_handler.py:154
 #, python-brace-format
 msgid "Failed to recreate spam topic and forward message: {}"
-msgstr ""
+msgstr "スパムトピックの再作成とメッセージ転送に失敗しました: {}"
 
 #: src/handlers/message_handler.py:158
 msgid "[Spam - Topic Error]"
-msgstr ""
+msgstr "[スパム - トピックエラー]"
 
 #: src/handlers/message_handler.py:163
 msgid "Cannot recreate spam topic: bot instance not available"
-msgstr ""
+msgstr "スパムトピックを再作成できません: ボットインスタンスを利用できません"
 
 #: src/handlers/message_handler.py:165
 #, python-brace-format
 msgid "Failed to forward spam message: {}"
-msgstr ""
+msgstr "スパムメッセージの転送に失敗しました: {}"
 
 #: src/handlers/message_handler.py:169
 #, python-brace-format
 msgid "Spam message from user {} processed in {:.2f}ms (matched: {})"
-msgstr ""
+msgstr "ユーザー {} からのスパムメッセージを処理しました（{:.2f}ms、一致: {}）"
 
 #: src/handlers/message_handler.py:189
 msgid "[Auto Response]"
@@ -1116,12 +1137,12 @@ msgstr "[自動応答]"
 #: src/handlers/message_handler.py:194
 #, python-brace-format
 msgid "Message from user {} processed in {:.2f}ms"
-msgstr ""
+msgstr "ユーザー {} からのメッセージを処理しました（{:.2f}ms）"
 
 #: src/handlers/message_handler.py:222
 #, python-brace-format
 msgid "User {} passed appeal verification"
-msgstr ""
+msgstr "ユーザー {} が異議申し立て認証に成功しました"
 
 #: src/handlers/message_handler.py:233
 msgid ""
@@ -1129,36 +1150,41 @@ msgid ""
 "\n"
 "Please try again by clicking the Appeal button."
 msgstr ""
+"❌ 回答が正しくありません。異議申し立て認証に失敗しました。\n"
+"\n"
+"異議申し立てボタンを押して、もう一度お試しください。"
 
 #: src/handlers/message_handler.py:253 src/handlers/message_handler.py:308
 msgid "Appeal"
-msgstr ""
+msgstr "異議申し立て"
 
 #: src/handlers/message_handler.py:258
 msgid ""
 "❌ Your account has been blocked. If you believe this is a mistake, you can "
 "submit an appeal (one-time opportunity)."
 msgstr ""
+"❌ アカウントがブロックされました。誤りだと思われる場合は、異議申し立てを送信できます"
+"（1回のみ）。"
 
 #: src/handlers/message_handler.py:264
 msgid ""
 "❌ Your account is temporarily blocked because you sent messages too "
 "quickly. Please try again later."
-msgstr ""
+msgstr "❌ メッセージの送信間隔が短すぎるため、アカウントは一時的にブロックされています。しばらくしてから再試行してください。"
 
 #: src/handlers/message_handler.py:278
 msgid "❌ Your account has been blocked by an administrator."
-msgstr ""
+msgstr "❌ 管理者によりアカウントがブロックされました。"
 
 #: src/handlers/message_handler.py:289
 #, python-brace-format
 msgid "User {} entered incorrect answer (attempt {}/3)"
-msgstr ""
+msgstr "ユーザー {} が誤った回答を入力しました（{}/3 回目）"
 
 #: src/handlers/message_handler.py:301
 #, python-brace-format
 msgid "User {} auto-blocked after 3 failed attempts"
-msgstr ""
+msgstr "ユーザー {} を認証失敗3回後に自動ブロックしました"
 
 #: src/handlers/message_handler.py:313
 msgid ""
@@ -1167,6 +1193,9 @@ msgid ""
 "If you believe this is a mistake, you can submit an appeal (one-time "
 "opportunity)."
 msgstr ""
+"❌ 認証に3回失敗したため、アカウントはブロックされました。\n"
+"\n"
+"誤りだと思われる場合は、異議申し立てを送信できます（1回のみ）。"
 
 #: src/handlers/message_handler.py:327
 #, python-brace-format
@@ -1176,25 +1205,29 @@ msgid ""
 "Please try again:\n"
 "{}"
 msgstr ""
+"❌ 回答が正しくありません（{}/3 回目）。\n"
+"\n"
+"もう一度お試しください:\n"
+"{}"
 
 #: src/handlers/message_handler.py:335
 #, python-brace-format
 msgid "User {} passed the captcha"
-msgstr ""
+msgstr "ユーザー {} が認証に成功しました"
 
 #: src/handlers/message_handler.py:336
 msgid "✅ Verification successful! You can now send messages."
-msgstr ""
+msgstr "✅ 認証に成功しました。メッセージを送信できます。"
 
 #: src/handlers/message_handler.py:344
 #, python-brace-format
 msgid "User {} is not verified"
-msgstr ""
+msgstr "ユーザー {} は未認証です"
 
 #: src/handlers/message_handler.py:349
 #, python-brace-format
 msgid "User {} rate limited for captcha requests"
-msgstr ""
+msgstr "ユーザー {} の認証リクエストはレート制限中です"
 
 #: src/handlers/message_handler.py:357
 msgid "⚠️ Your message was not sent. Please complete verification first."
@@ -1205,16 +1238,18 @@ msgid ""
 "Please solve the following math problem and send the answer:\n"
 "\n"
 msgstr ""
+"次の計算問題を解き、答えを送信してください:\n"
+"\n"
 
 #: src/handlers/message_handler.py:375 src/handlers/message_handler.py:377
 msgid "Invalid captcha setting"
-msgstr ""
+msgstr "認証設定が無効です"
 
 #: src/handlers/message_handler.py:396
 #, python-brace-format
 msgid ""
 "Invalid or unavailable captcha setting; using {} captcha for verification"
-msgstr ""
+msgstr "認証設定が無効または利用できないため、{} 認証を使用します"
 
 #: src/handlers/message_handler.py:434
 msgid ""
@@ -1222,6 +1257,9 @@ msgid ""
 "\n"
 "You will be notified once a decision is made."
 msgstr ""
+"✅ 異議申し立てを送信しました。管理者の審査をお待ちください。\n"
+"\n"
+"決定後に通知します。"
 
 #: src/handlers/message_handler.py:459
 msgid ""
@@ -1229,6 +1267,9 @@ msgid ""
 "\n"
 "⚠️ Note: If you fail verification again, you will be permanently blocked."
 msgstr ""
+"✅ 異議申し立ては自動承認されました。\n"
+"\n"
+"⚠️ 注意: 再び認証に失敗すると、永久にブロックされます。"
 
 #: src/handlers/message_handler.py:465
 #, python-brace-format
@@ -1241,14 +1282,21 @@ msgid ""
 "\n"
 "⚠️ User is now on watch. Next violation will result in permanent block."
 msgstr ""
+"🔔 自動承認の通知\n"
+"\n"
+"ユーザー: {}（ID: {}）\n"
+"ユーザー名: @{}\n"
+"状態: ✅ 自動承認\n"
+"\n"
+"⚠️ このユーザーは監視対象です。次の違反で永久にブロックされます。"
 
 #: src/handlers/message_handler.py:478
 msgid "✅ Approve"
-msgstr ""
+msgstr "✅ 承認"
 
 #: src/handlers/message_handler.py:482
 msgid "❌ Reject"
-msgstr ""
+msgstr "❌ 却下"
 
 #: src/handlers/message_handler.py:489
 #, python-brace-format
@@ -1261,6 +1309,13 @@ msgid ""
 "\n"
 "Please review and decide:"
 msgstr ""
+"🔔 新しい異議申し立て\n"
+"\n"
+"ユーザー: {}（ID: {}）\n"
+"ユーザー名: @{}\n"
+"理由: 認証に3回失敗したため自動ブロック\n"
+"\n"
+"審査して決定してください:"
 
 #: src/handlers/message_handler.py:524
 #, python-brace-format
@@ -1275,7 +1330,7 @@ msgstr "ユーザー {} からのメッセージ転送できない"
 #: src/handlers/message_handler.py:604 src/handlers/message_handler.py:607
 #, python-brace-format
 msgid "Failed to forward message to user {}"
-msgstr ""
+msgstr "ユーザー {} へのメッセージ転送に失敗しました"
 
 #: src/handlers/message_handler.py:611
 msgid "Chat not found, please remove this topic manually"
@@ -1288,7 +1343,7 @@ msgstr "BetterForward Enhanceのスタート..."
 #: src/bot.py:154
 #, python-brace-format
 msgid "Message queue initialized with {} workers"
-msgstr ""
+msgstr "メッセージキューを {} ワーカーで初期化しました"
 
 #: src/bot.py:195 src/bot.py:203
 msgid "Delete a message"
@@ -1312,31 +1367,31 @@ msgstr "スレッドを削除する"
 
 #: src/bot.py:286
 msgid "Your account is currently blocked"
-msgstr ""
+msgstr "アカウントは現在ブロックされています"
 
 #: src/bot.py:290
 msgid "Verification successful, you can now send messages"
-msgstr ""
+msgstr "認証に成功しました。メッセージを送信できます"
 
 #: src/bot.py:291
 msgid "Verification successful"
-msgstr ""
+msgstr "認証に成功しました"
 
 #: src/bot.py:295
 msgid "Your account is not blocked"
-msgstr ""
+msgstr "アカウントはブロックされていません"
 
 #: src/bot.py:303
 msgid "Appeal verification successful"
-msgstr ""
+msgstr "異議申し立て認証に成功しました"
 
 #: src/bot.py:305
 msgid "Invalid verification purpose"
-msgstr ""
+msgstr "認証目的が無効です"
 
 #: src/bot.py:326 src/bot.py:327
 msgid "Topic function is not enabled in this group"
-msgstr ""
+msgstr "このグループではトピック機能が有効ではありません"
 
 #: src/bot.py:331
 msgid "Manage Topics"
@@ -1358,51 +1413,53 @@ msgstr "ボット起動成功"
 #: src/bot.py:361
 #, python-brace-format
 msgid "Spam topic loaded: {}"
-msgstr ""
+msgstr "スパムトピックを読み込みました: {}"
 
 #: src/bot.py:363
 #, python-brace-format
 msgid "Invalid spam topic ID in database: {}"
-msgstr ""
+msgstr "データベース内のスパムトピックIDが無効です: {}"
 
 #: src/bot.py:370
 msgid "Creating spam topic..."
-msgstr ""
+msgstr "スパムトピックを作成しています..."
 
 #: src/bot.py:379
 #, python-brace-format
 msgid "Spam topic created with ID: {}"
-msgstr ""
+msgstr "スパムトピックを作成しました。ID: {}"
 
 #: src/bot.py:384
 msgid ""
 "This topic is used to collect spam messages detected by keywords.\n"
 "Messages here are automatically forwarded from users who sent spam content."
 msgstr ""
+"このトピックは、キーワードで検出されたスパムメッセージを収集するために使用されます。\n"
+"スパム内容を送信したユーザーからのメッセージは、ここへ自動転送されます。"
 
 #: src/bot.py:391
 #, python-brace-format
 msgid "Failed to create spam topic: {}"
-msgstr ""
+msgstr "スパムトピックの作成に失敗しました: {}"
 
 #: src/bot.py:424
 #, python-brace-format
 msgid "Blocked Messages topic loaded: {}"
-msgstr ""
+msgstr "ブロック済みメッセージのトピックを読み込みました: {}"
 
 #: src/bot.py:426
 #, python-brace-format
 msgid "Invalid Blocked Messages topic ID in database: {}"
-msgstr ""
+msgstr "データベース内のブロック済みメッセージトピックIDが無効です: {}"
 
 #: src/bot.py:433
 msgid "Creating Blocked Messages topic..."
-msgstr ""
+msgstr "ブロック済みメッセージのトピックを作成しています..."
 
 #: src/bot.py:442
 #, python-brace-format
 msgid "Blocked Messages topic created with ID: {}"
-msgstr ""
+msgstr "ブロック済みメッセージのトピックを作成しました。ID: {}"
 
 #: src/bot.py:447
 msgid ""
@@ -1410,76 +1467,79 @@ msgid ""
 "Messages here are automatically forwarded from blocked users.\n"
 "Admins can reply to a message and use /unban to unblock the user."
 msgstr ""
+"このトピックはブロック済みユーザーからのメッセージを収集するために使用されます。\n"
+"ブロック済みユーザーからのメッセージは、ここへ自動転送されます。\n"
+"管理者は対象メッセージに返信して /unban を使用すると、ユーザーのブロックを解除できます。"
 
 #: src/bot.py:455
 #, python-brace-format
 msgid "Failed to create Blocked Messages topic: {}"
-msgstr ""
+msgstr "ブロック済みメッセージのトピック作成に失敗しました: {}"
 
 #: src/bot.py:469
 #, python-brace-format
 msgid "Failed to reset Blocked Messages topic: {}"
-msgstr ""
+msgstr "ブロック済みメッセージのトピックリセットに失敗しました: {}"
 
 #: src/bot.py:603
 msgid "Stopping bot..."
-msgstr ""
+msgstr "ボットを停止しています..."
 
 #: src/bot.py:607
 msgid "Bot stopped"
-msgstr ""
+msgstr "ボットを停止しました"
 
 #: src/utils/message_queue.py:248
 #, python-brace-format
 msgid "Started {} message processing workers"
-msgstr ""
+msgstr "メッセージ処理ワーカーを {} 個開始しました"
 
 #: src/utils/message_queue.py:445
 #, python-brace-format
 msgid "Worker error: {}"
-msgstr ""
+msgstr "ワーカーエラー: {}"
 
 #: src/utils/message_queue.py:456
 #, python-brace-format
 msgid "Failed to process message for user {}: {}"
-msgstr ""
+msgstr "ユーザー {} のメッセージ処理に失敗しました: {}"
 
 #: src/utils/message_queue.py:494
 msgid "Stopping message queue manager..."
-msgstr ""
+msgstr "メッセージキューマネージャーを停止しています..."
 
 #: src/utils/message_queue.py:498
 msgid "Message queue manager stopped"
-msgstr ""
+msgstr "メッセージキューマネージャーを停止しました"
 
 #: src/utils/auto_response.py:53
 #, python-brace-format
 msgid "Invalid regular expression: {}"
-msgstr ""
+msgstr "正規表現が無効です: {}"
 
 #: src/utils/spam_detector_manager.py:33
 #, python-brace-format
 msgid "Registered spam detector: {}"
-msgstr ""
+msgstr "スパム検出器を登録しました: {}"
 
 #: src/utils/spam_detector_manager.py:44
 #, python-brace-format
 msgid "Unregistered spam detector: {}"
-msgstr ""
+msgstr "スパム検出器の登録を解除しました: {}"
 
 #: src/utils/spam_detector_manager.py:68
 #, python-brace-format
 msgid "Spam detected by {}: {}"
-msgstr ""
+msgstr "{} によりスパムを検出しました: {}"
 
 #: src/utils/spam_detector_manager.py:75
 #, python-brace-format
 msgid "Error in spam detector {}: {}"
-msgstr ""
+msgstr "スパム検出器 {} でエラーが発生しました: {}"
 
 #: src/utils/spam_detector_manager.py:118
 msgid "All spam detectors cleared"
-msgstr ""
+msgstr "すべてのスパム検出器を解除しました"
 
 #: src/database.py:63
 #, python-brace-format
