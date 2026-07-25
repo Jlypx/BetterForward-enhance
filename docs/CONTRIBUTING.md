@@ -1,10 +1,9 @@
 # Contributing
 
-This project welcomes contributions and suggestions.
+Contributions to BetterForward Enhance are welcome.
 
-This project is mostly maintained by SideCloud. Your contributions will be seriously discussed by our developer team.
+Before opening a pull request, keep the change focused, add or update tests for behavior changes, and run the relevant test suite locally. Use GitHub Issues to discuss substantial changes or report defects:
 
-If you cannot code by yourself, use [issues](https://github.com/SideCloudGroup/BetterForward/issues) to let us know what
-you want. Your advice matters.
+https://github.com/Jlypx/BetterForward-enhance/issues
 
-contact us [by email](mailto:contact@sidecloud.cc) with any additional questions or comments.
+Please do not include credentials, database exports, or user message content in issues, pull requests, or logs.

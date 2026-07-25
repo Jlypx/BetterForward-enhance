@@ -1,4 +1,4 @@
-"""Captcha functionality for BetterForward."""
+"""Captcha functionality for BetterForward Enhance."""
 
 import os
 import random
@@ -77,7 +77,7 @@ class CaptchaManager:
                                     (user_id,))
             verified = result.fetchone() is not None
             self.cache.set(f"verified_{user_id}", verified, 1800)
-        return verified
+        return bool(verified)
 
     def set_user_verified(self, user_id: int, db):
         """Mark a user as verified."""
@@ -179,7 +179,7 @@ class CaptchaManager:
 
     # ========== Image Captcha ==========
 
-    def _generate_image_captcha(self, user_id: int) -> str:
+    def _generate_image_captcha(self, user_id: int) -> None:
         """Generate an image captcha with 4 digits."""
         # Generate random 4-digit number
         captcha_text = ''.join([str(random.randint(0, 9)) for _ in range(4)])

@@ -1,4 +1,4 @@
-"""Helper functions for BetterForward."""
+"""Helper functions for BetterForward Enhance."""
 
 import re
 

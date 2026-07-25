@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+# pyright: reportUnusedCallResult=false
 """Simple test script for verification enhancement features."""
 
+import importlib.metadata
 import sys
 import sqlite3
 import os
@@ -10,7 +12,7 @@ def test_pillow():
     """Test Pillow library."""
     print("🔍 Testing Pillow library...")
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw, ImageFont  # pyright: ignore[reportMissingImports]
         from io import BytesIO
         import random
 
@@ -72,7 +74,7 @@ def test_database_structure():
     """Test database structure creation."""
     print("\n🔍 Testing database structure...")
     try:
-        test_db = "/tmp/test_betterforward.db"
+        test_db = "/tmp/test_betterforward-enhance.db"
         if os.path.exists(test_db):
             os.remove(test_db)
 
@@ -229,18 +231,18 @@ def test_dependencies():
     print("\n🔍 Testing dependencies...")
     try:
         import telebot
-        print(f"   ✅ pyTelegramBotAPI (telebot) installed")
+        print(f"   ✅ pyTelegramBotAPI ({telebot.__name__}) installed")
 
         import diskcache
         print(f"   ✅ diskcache {diskcache.__version__}")
 
         import pytz
-        print(f"   ✅ pytz {pytz.__version__}")
+        print(f"   ✅ pytz {importlib.metadata.version('pytz')} ({pytz.UTC.zone})")
 
         import httpx
         print(f"   ✅ httpx {httpx.__version__}")
 
-        from PIL import Image
+        from PIL import Image  # pyright: ignore[reportMissingImports]
         print(f"   ✅ Pillow {Image.__version__ if hasattr(Image, '__version__') else 'installed'}")
 
         print("\n   ✅ All dependencies installed!")
@@ -295,6 +297,8 @@ def test_migration_script():
             "migration",
             str(migration_path)
         )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load migration module from {migration_path}")
         migration = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(migration)
 
@@ -338,7 +342,7 @@ def test_migration_script():
 def main():
     """Run all tests."""
     print("=" * 70)
-    print("🧪 BetterForward Verification Enhancement Tests")
+    print("🧪 BetterForward Enhance Verification Tests")
     print("=" * 70)
 
     results = {

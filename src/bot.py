@@ -1,4 +1,5 @@
-"""Main bot class for BetterForward."""
+# pyright: reportUnusedCallResult=false
+"""Main bot class for BetterForward Enhance."""
 
 import sqlite3
 from types import SimpleNamespace
@@ -46,8 +47,11 @@ class TGBot:
             db_path: Path to SQLite database
             num_workers: Number of worker threads for message processing (default: 5)
         """
-        logger.info(_("Starting BetterForward..."))
-        self.group_id = int(group_id)
+        logger.info(_("Starting BetterForward Enhance..."))
+        try:
+            self.group_id = int(group_id)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Group ID must be an integer") from error
         self.bot = TeleBot(token=bot_token)
         self.db_path = db_path
         self.num_workers = num_workers
@@ -68,7 +72,7 @@ class TGBot:
 
         # Initialize timezone
         tz_str = self.cache.get("setting_time_zone")
-        self.time_zone = pytz.timezone(tz_str) if tz_str else pytz.UTC
+        self.time_zone = pytz.timezone(str(tz_str)) if tz_str else pytz.UTC
 
         # Initialize managers
         self.captcha_manager = CaptchaManager(
@@ -240,7 +244,7 @@ class TGBot:
     def get_turnstile_settings(self):
         """Return persisted Turnstile settings in service-facing form."""
         return {
-            field: self.cache.get(f"setting_{db_key}")
+            field: str(self.cache.get(f"setting_{db_key}") or "")
             for field, db_key in self.TURNSTILE_SETTING_KEYS.items()
         }
 
@@ -310,7 +314,7 @@ class TGBot:
         """Update the timezone from cache and propagate to all handlers."""
         tz_str = self.cache.get("setting_time_zone")
         if tz_str:
-            self.time_zone = pytz.timezone(tz_str)
+            self.time_zone = pytz.timezone(str(tz_str))
             # Update all components that use timezone
             self.auto_response_manager.update_time_zone(self.time_zone)
             self.admin_handler.update_time_zone()
@@ -324,12 +328,12 @@ class TGBot:
 
         chat_member = self.bot.get_chat_member(self.group_id, self.bot.get_me().id)
         permissions = {
-            _("Manage Topics"): chat_member.can_manage_topics,
-            _("Delete Messages"): chat_member.can_delete_messages
+            _("Manage Topics"): getattr(chat_member, "can_manage_topics", False),
+            _("Delete Messages"): getattr(chat_member, "can_delete_messages", False)
         }
 
         for key, value in permissions.items():
-            if value is False:
+            if not value:
                 logger.error(_("Bot doesn't have {} permission").format(key))
                 self.bot.send_message(self.group_id, _("Bot doesn't have {} permission").format(key))
 
@@ -391,7 +395,7 @@ class TGBot:
         """Reset spam topic by creating a new one."""
         try:
             # Clear old setting
-            self.database.set_setting('spam_topic', None)
+            self.database.set_setting('spam_topic', 'None')
             self.cache.delete("spam_topic_id")
 
             # Create new topic
@@ -455,7 +459,7 @@ class TGBot:
         """Reset blocked messages topic by creating a new one."""
         try:
             # Clear old setting
-            self.database.set_setting('blocked_topic', None)
+            self.database.set_setting('blocked_topic', 'None')
             self.cache.delete("blocked_topic_id")
 
             # Create new topic
@@ -525,16 +529,16 @@ class TGBot:
 
     def _is_rate_limit_verified(self, user_id: int) -> bool:
         """Use the cached verification state without database work on ingress."""
-        return self.cache.get(f"verified_{user_id}") is True
+        return bool(self.cache.get(f"verified_{user_id}"))
 
     def _is_rate_limit_priority(self, user_id: int) -> bool:
         """Return whether an admin-replied user is still inside the activity window."""
-        return self.cache.get(f"priority_user_{user_id}") is True
+        return bool(self.cache.get(f"priority_user_{user_id}"))
 
     def _touch_rate_limit_priority(self, user_id: int):
         """Extend priority while the replied user keeps the conversation active."""
         key = f"priority_user_{user_id}"
-        if self.cache.get(key) is True:
+        if self.cache.get(key):
             self.cache.set(key, True, expire=args.priority_inactivity_seconds)
 
     def mark_user_replied(self, user_id: int):
@@ -590,7 +594,7 @@ class TGBot:
         """Push messages to the queue for processing."""
         self.message_queue_manager.put(message)
 
-    def get_queue_stats(self) -> dict:
+    def get_queue_stats(self) -> dict[str, object]:
         """Get current message queue statistics."""
         return self.message_queue_manager.get_stats()
 

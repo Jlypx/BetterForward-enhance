@@ -1,1 +1,1 @@
-"""Handler modules for BetterForward."""
+"""Handler modules for BetterForward Enhance."""

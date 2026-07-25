@@ -1,5 +1,5 @@
 """
-BetterForward - A Telegram bot for forwarding messages with topic support.
+BetterForward Enhance - A Telegram bot for forwarding messages with topic support.
 Entry point for the application.
 """
 

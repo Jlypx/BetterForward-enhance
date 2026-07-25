@@ -1,6 +1,6 @@
 msgid ""
 msgstr ""
-"Project-Id-Version: BetterForward\n"
+"Project-Id-Version: BetterForward Enhance\n"
 "POT-Creation-Date: 2025-11-12 23:37+0800\n"
 "PO-Revision-Date: 2025-11-12 23:46+0800\n"
 "Last-Translator: \n"
@@ -23,8 +23,8 @@ msgid "Exiting..."
 msgstr "終了..."
 
 #: src/bot.py:34
-msgid "Starting BetterForward..."
-msgstr "BetterForwardのスタート..."
+msgid "Starting BetterForward Enhance..."
+msgstr "BetterForward Enhanceのスタート..."
 
 #: src/bot.py:102
 #, python-brace-format

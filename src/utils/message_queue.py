@@ -1,11 +1,13 @@
+# pyright: reportUnusedCallResult=false
 """Bounded, rate-limited message queue for Telegram updates."""
 
 import queue
+from queue import Empty, Full
 import threading
 import time
 from collections import OrderedDict, defaultdict, deque
 from itertools import count
-from typing import Callable
+from typing import Any, Callable
 
 from telebot.types import Message
 from telebot.util import antiflood
@@ -93,7 +95,7 @@ return {1, 0, 0, is_priority}
 """
 
     def __init__(self, redis_url: str, key_prefix: str, state_ttl: int):
-        import redis
+        import redis  # pyright: ignore[reportMissingImports]
 
         self.client = redis.Redis.from_url(
             redis_url,
@@ -119,11 +121,15 @@ return {1, 0, 0, is_priority}
             args=[
                 time.time(), global_rate, global_capacity,
                 user_rate, user_capacity, priority_rate, priority_capacity,
-                priority_ttl, int(priority_allowed), block_threshold, self.state_ttl,
+                priority_ttl, 1 if priority_allowed else 0, block_threshold, self.state_ttl,
             ],
         )
-        allowed, global_limited, should_block, is_priority = (
-            int(value) for value in result)
+        try:
+            allowed, global_limited, should_block, is_priority = (
+                int(value) for value in result)
+        except (TypeError, ValueError) as error:
+            logger.error("Invalid shared rate-limit response: %s", error)
+            return False, False, False, False
         return bool(allowed), bool(global_limited), bool(should_block), bool(is_priority)
 
     def mark_priority(self, user_id: int, inactivity_seconds: int):
@@ -148,7 +154,7 @@ return {1, 0, 0, is_priority}
 class MessageQueueManager:
     """Process Telegram updates with bounded queues and ingress rate limits."""
 
-    def __init__(self, handler_func: Callable, num_workers: int = 5,
+    def __init__(self, handler_func: Callable[[Message], object], num_workers: int = 5,
                  queue_size: int = 1000, group_queue_size: int = 200,
                  per_user_queue_size: int = 5,
                  unverified_rate: float = 0.1, unverified_burst: int = 1,
@@ -162,7 +168,7 @@ class MessageQueueManager:
                  is_user_priority: Callable[[int], bool] | None = None,
                  touch_user_priority: Callable[[int], None] | None = None,
                  block_user: Callable[[Message], None] | None = None,
-                 redis_url: str = "", redis_prefix: str = "betterforward"):
+                 redis_url: str = "", redis_prefix: str = "betterforward-enhance"):
         self._validate_settings(
             num_workers, queue_size, group_queue_size, per_user_queue_size,
             unverified_rate, unverified_burst, verified_rate, verified_burst,
@@ -201,7 +207,7 @@ class MessageQueueManager:
         self._stop_event = threading.Event()
 
         self._rate_states = OrderedDict()
-        self._global_tokens = float(global_burst)
+        self._global_tokens = global_burst * 1.0
         self._global_updated = time.monotonic()
         self._stats = defaultdict(int)
         self._redis_limiter = self._create_redis_limiter(redis_url, redis_prefix)
@@ -217,7 +223,7 @@ class MessageQueueManager:
         if not redis_url:
             return None
 
-        state_ttl = max(60, int(max(
+        state_ttl = max(60, round(max(
             self.unverified_burst / self.unverified_rate,
             self.verified_burst / self.verified_rate,
             self.priority_burst / self.priority_rate,
@@ -283,7 +289,7 @@ class MessageQueueManager:
             state = self._rate_states.get(user_id)
             if state is None:
                 state = {
-                    "tokens": float(user_capacity),
+                    "tokens": user_capacity * 1.0,
                     "updated": now,
                     "violations": 0,
                     "block_requested": False,
@@ -407,10 +413,10 @@ class MessageQueueManager:
             except Exception as error:
                 logger.error("Failed to revoke shared priority status: %s", error)
 
-    def _get_next_message(self) -> tuple[tuple[Message, Callable], queue.Queue]:
+    def _get_next_message(self) -> tuple[tuple[Message, Callable[[Message], object]], queue.Queue[Any]]:
         try:
             return self.group_queue.get_nowait(), self.group_queue
-        except queue.Empty:
+        except Empty:
             _, _, queued_message = self.private_queue.get(timeout=0.2)
             return queued_message, self.private_queue
 
@@ -433,13 +439,13 @@ class MessageQueueManager:
                     self.processing_users.add(user_id)
 
                 self._process_user_messages(user_id, queued_message, source_queue)
-            except queue.Empty:
+            except Empty:
                 continue
             except Exception as error:
                 logger.error(_("Worker error: {}").format(error))
 
-    def _process_user_messages(self, user_id, first_item: tuple[Message, Callable],
-                               source_queue: queue.Queue):
+    def _process_user_messages(self, user_id, first_item: tuple[Message, Callable[[Message], object]],
+                               source_queue: queue.Queue[Any]):
         try:
             queued_message = first_item
             while True:
@@ -459,7 +465,8 @@ class MessageQueueManager:
         finally:
             source_queue.task_done()
 
-    def put(self, message: Message, handler_func: Callable | None = None) -> bool:
+    def put(self, message: Message,
+            handler_func: Callable[[Message], object] | None = None) -> bool:
         """Try to queue an update without blocking the polling thread."""
         queued_message = (message, handler_func or self.handler_func)
         if self._is_private(message):
@@ -477,7 +484,7 @@ class MessageQueueManager:
         try:
             target_queue.put_nowait(queue_item)
             return True
-        except queue.Full:
+        except Full:
             with self.lock:
                 self._stats[f"dropped_{queue_name}_queue_full"] += 1
             return False
@@ -490,7 +497,7 @@ class MessageQueueManager:
             worker.join(timeout=5)
         logger.info(_("Message queue manager stopped"))
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, object]:
         with self.lock:
             return {
                 "main_queue_size": self.private_queue.qsize(),

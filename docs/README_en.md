@@ -1,146 +1,42 @@
-# BetterForward
+# BetterForward Enhance
 
-[中文README](README.md)
+[中文说明](README.md)
 
-Designed for better message forwarding in Telegram.
-
-Use the "topic" feature to achieve a better PM bot.
-
-Forward users' messages to topics in the group. Each user corresponds to a topic.
+BetterForward Enhance is a Telegram message-forwarding and safety-management bot built for groups with topics. Each user conversation is mapped to a dedicated topic in an admin group, so a team can respond without exposing personal accounts.
 
 ## Features
 
-- Privacy: Admins' accounts are not exposed.
-- Flexibility: Each user corresponds to an independent topic, and the experience is almost the same as private chat.
-- Teamwork: Multiple admins can handle users' messages.
-- Multi-language: Supports multiple languages, including English, Chinese and Japanese.
-- Auto Response: Automatically replies to users' messages with predefined messages, and supports detection with regex.
-  Allows setting active time for auto-reply.
-- Captcha: Added a human verification feature to ensure that users are real people, effectively preventing the sending
-  of spam messages.
-- Spam Protection: Intelligent spam filtering system with keyword-based detection. Supports extensible detector interface for integrating AI models, external APIs, and custom detection methods.
-- Broadcast Message: Allows admins to send a message to all users at once.
+- One topic per user for private-message forwarding
+- Collaborative replies, bans, and conversation termination
+- English, Simplified Chinese, and Japanese interfaces
+- Scheduled and regex-aware automatic responses
+- Image, math, and Cloudflare Turnstile human verification
+- Keyword spam isolation with an extensible detector interface
+- Private and group message queues, rate limits, and temporary abuse blocks
+- Broadcast messages to all users
 
-## Usage
+## Quick Start
 
-1. Create a bot from [@BotFather](https://t.me/BotFather) and get the token.
-2. Create a group with topics, and add the bot as an admin.
-3. Get the group ID.
-   This step can be done by inviting [@sc_ui_bot](https://t.me/sc_ui_bot) to the group and use the command `/id`.
-4. Deploy BetterForward to a server.
-
-Any messages sent to the bot will be forwarded to the corresponding topic in the group.
-
-More options and settings can be found by sending the `/help` command to the bot in the group.
-
-## Deployment
-
-The following are the available language options:
-
-- English - `en_US`
-- Chinese - `zh_CN`
-- Japanese - `ja_JP`
-
-We welcome contributions to add more languages.
-
-### Docker (Recommended)
-
-#### Using Docker Compose (Recommended)
-
-1. Download the `docker-compose.yml` file:
-
-```bash
-wget https://github.com/SideCloudGroup/BetterForward/raw/refs/heads/main/docker-compose.yml
-```
-
-2. Edit the `docker-compose.yml` file and replace the placeholder values:
-    - `your_bot_token_here` with your actual bot token
-    - `your_group_id_here` with your actual group ID
-    - `zh_CN` with your preferred language (`en_US`, `zh_CN`, or `ja_JP`)
-    - Leave `TG_API` empty or set your custom API endpoint
-    - `WORKER=2` sets the number of worker threads (default: 2)
-
-3. Run with Docker Compose:
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
+2. Create a Telegram group with topics enabled, add the bot as an administrator, and obtain the group ID.
+3. Clone this repository and set `TOKEN`, `GROUP_ID`, and `LANGUAGE` in `docker-compose.yml`.
+4. Start the service:
 
 ```bash
 docker compose up -d
 ```
 
-#### Using Docker Run
+The published image is `ghcr.io/jlypx/betterforward-enhance:latest`. After startup, private messages to the bot are forwarded to each user's topic in the admin group. Send `/help` in the group main topic to open the administration menu.
 
-Replace `/path/to/data` with your actual data directory path:
+## Configuration
 
-```bash
-docker run -d --name betterforward \
-    -e TOKEN=<your_bot_token> \
-    -e GROUP_ID=<your_group_id> \
-    -e LANGUAGE=<language> \
-    -e WORKER=2 \
-    -v /path/to/data:/app/data \
-    --restart unless-stopped \
-    ghcr.io/sidecloudgroup/betterforward:latest
-```
+- `LANGUAGE` accepts `en_US`, `zh_CN`, and `ja_JP`.
+- `WORKERS` controls message-processing threads and defaults to `2`.
+- `REDIS_URL` and `REDIS_PREFIX` enable shared rate limits across instances; build with `--build-arg ENABLE_REDIS=true` to install the optional dependency.
+- The Turnstile WebApp is disabled by default. Configure its public HTTPS URL, site key, secret key, and listener from the bot administration menu. Saved runtime settings take precedence over environment defaults.
 
-If you need to use a custom API, you can set the environment variable `TG_API`. Leave it empty or unset to use the
-default API.
+See the [Docker deployment guide](../DOCKER.md) for complete Docker, rate-limit, and Turnstile instructions.
 
-## Multithreading Support
+## Feedback and Security
 
-BetterForward supports multithreading through the `WORKER` parameter to improve performance and handle concurrent
-requests:
-
-- **Default**: `WORKER=2` - Balanced performance for most deployments
-- **High Traffic**: `WORKER=3-5` - Recommended for high-traffic scenarios
-- **Thread Safety**: The application uses thread-safe database operations and message queues to prevent conflicts
-- **Conflict Resolution**: Database transactions and locking mechanisms ensure data consistency across multiple worker
-  threads
-
-## Upgrade
-
-If you deploy this project using Docker, you can use [WatchTower](https://github.com/containrrr/watchtower) to quickly
-update. **Please adjust the container name yourself**. Use the following command to update:
-
-```bash
-docker run --rm \
--v /var/run/docker.sock:/var/run/docker.sock \
-containrrr/watchtower -cR \
-<Container Name>
-```
-
-## Spam Protection
-
-BetterForward includes an intelligent spam filtering system to help you effectively manage and isolate spam content.
-
-### Keyword Filtering
-
-- **Smart Matching**: Supports fuzzy matching to automatically identify messages containing spam keywords
-- **High Performance**: Uses optimized regex with O(n) time complexity for extremely fast processing
-- **Easy Management**: Add, view, and delete keywords through the admin menu
-- **Auto Isolation**: Matched spam messages are automatically forwarded to a dedicated spam topic without creating user threads
-- **Silent Mode**: Forwarding uses silent mode to avoid notification spam
-
-### Usage
-
-1. Send `/help` command in the main group topic
-2. Select "🚫 Spam Keywords" menu
-3. Click "➕ Add Keyword" to add keywords to filter
-4. Click "📋 View Keywords" to manage existing keywords
-
-Keyword configuration is saved in `data/spam_keywords.json` and supports manual editing.
-
-## Admin Commands
-
-- `/terminate [User ID]`: Ends the conversation with a specified user. When this command is issued within a conversation
-  thread, there is no need to include the User ID; the current conversation will be terminated automatically. The user
-  will not receive any further prompts or notifications.
-- `/help`: Displays the help menu, which includes a list of available commands and their instructions.
-- `/ban`: Prevents the user from sending more messages. This command is only applicable within the specific
-  conversation thread where it is executed.
-- `/unban [User ID]`: Reinstates the ability for a user to send messages. If no User ID is specified, the command will
-  apply to the user in the current conversation thread.
-
-## Community
-
-- Telegram Channel [@betterforward](https://t.me/betterforward)
-
-Please use `issues` for bug reports and feature requests.
+Report bugs and feature requests through [GitHub Issues](https://github.com/Jlypx/BetterForward-enhance/issues). Report vulnerabilities privately under the [security policy](SECURITY.md).

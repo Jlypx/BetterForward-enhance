@@ -1,8 +1,8 @@
-version: '3.8'
+version: "3.8"
 
 services:
-  betterforward:
-    image: ghcr.io/sidecloudgroup/betterforward:latest
+  betterforward-enhance:
+    image: ghcr.io/jlypx/betterforward-enhance:latest
     restart: unless-stopped
     environment:
       - TOKEN=your_bot_token_here
@@ -27,7 +27,7 @@ services:
       - RATE_LIMIT_STATE_SIZE=10000
       # Set only when the image was built with --build-arg ENABLE_REDIS=true.
       - REDIS_URL=
-      - REDIS_PREFIX=betterforward
+      - REDIS_PREFIX=betterforward-enhance
       # Optional first-run defaults. Runtime settings in SQLite take precedence afterward.
       - WEBAPP_ENABLED=disable
       - WEBAPP_PUBLIC_URL=

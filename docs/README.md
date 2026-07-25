@@ -1,23 +1,42 @@
-# BetterForward
+# BetterForward Enhance
 
-注意！本项目由 https://github.com/SideCloudGroup/BetterForward 修改而来，无长期维护意向，如有PR需求请直接向原项目发起（这个项目单独做是因为纯ai写的，怕污染别人的库，就单独弄出来了）
+[English](README_en.md)
 
-~~针对于目前发广告的🐶仍然可以通过穷举数字和点击按钮来绕过原项目的人机验~~，官方已经支持cf和google的人机验证，本项目主要实现了以下功能：
+BetterForward Enhance 是面向 Telegram 话题群的私信转发与安全管理机器人。它将每位用户的消息映射到管理群中的独立话题，使多个管理员可以在不暴露个人账号的前提下处理会话。
 
-✅ 3次尝试限制，失败后自动封禁
+## 功能
 
-✅ 自助申诉系统，提交前需通过人机验证
+- 按用户创建独立话题并转发消息
+- 多管理员协作回复、封禁和终止会话
+- 中文、英文和日文界面
+- 自动回复、定时自动回复和正则匹配
+- 图片、数学题和 Cloudflare Turnstile 人机验证
+- 关键词垃圾消息隔离，以及可扩展的检测器接口
+- 私聊和群组消息队列、限流和临时封禁
+- 向全部用户广播消息
 
-✅ 图片验证码支持，包含噪声和干扰（4位数字）
+## 快速部署
 
-✅ 增强数学验证码（1-50范围，从1-10提升）
+1. 使用 [@BotFather](https://t.me/BotFather) 创建机器人并获取 Token。
+2. 创建已启用话题的 Telegram 群组，将机器人添加为管理员，并取得群组 ID。
+3. 克隆本仓库，编辑 `docker-compose.yml` 中的 `TOKEN`、`GROUP_ID` 和 `LANGUAGE`。
+4. 启动服务：
 
-✅ 关键安全修复：已封禁用户不再收到验证码
+```bash
+docker compose up -d
+```
 
-✅ 速率限制：尝试间隔10秒，超时300秒
+镜像发布到 `ghcr.io/jlypx/betterforward-enhance:latest`。首次运行后，机器人私聊消息会转发到管理群内对应的用户话题。管理员在群组主话题中发送 `/help` 可打开管理菜单。
 
-## usage
+## 配置
 
-把原项目的docker镜像名改为pokstay/betterforward-enhance即可，不过保险起见建议删除原来的data文件夹，因为对数据库的读写做了少许修改
+- `LANGUAGE` 支持 `en_US`、`zh_CN` 和 `ja_JP`。
+- `WORKERS` 控制消息处理线程数，默认值为 `2`。
+- `REDIS_URL` 和 `REDIS_PREFIX` 仅用于多实例共享限流；构建镜像时需添加 `--build-arg ENABLE_REDIS=true`。
+- Turnstile WebApp 默认关闭。可在机器人管理菜单配置公开 HTTPS 地址、Site Key、Secret Key 和监听端口；运行时保存的配置优先于环境变量。
 
+完整的 Docker 部署、限流和 Turnstile 配置见 [Docker 部署指南](../DOCKER.md)。
 
+## 反馈与安全
+
+功能建议和缺陷请提交到 [GitHub Issues](https://github.com/Jlypx/BetterForward-enhance/issues)。安全问题请按 [安全策略](SECURITY.md) 私下报告。

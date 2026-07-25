@@ -9,6 +9,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
+from typing import cast
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -170,7 +171,7 @@ class TurnstileWebAppService:
         with self._lock:
             if not self.is_enabled():
                 raise RuntimeError("Turnstile WebApp is not enabled")
-            public_url = self._settings["public_url"]
+            public_url = str(self._settings["public_url"])
             generation = self._generation
 
         previous_id = self.cache.get(f"webapp_challenge_user_{user_id}")
@@ -179,9 +180,9 @@ class TurnstileWebAppService:
 
         challenge_id = secrets.token_urlsafe(32)
         challenge = {
-            "user_id": int(user_id),
+            "user_id": user_id,
             "purpose": purpose,
-            "created_at": int(time.time()),
+            "created_at": time.time_ns() // 1_000_000_000,
             "generation": generation,
         }
         self.cache.set(
@@ -203,7 +204,7 @@ class TurnstileWebAppService:
         return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", query, ""))
 
     def _page_path(self):
-        parsed = urlsplit(self._settings.get("public_url", ""))
+        parsed = urlsplit(str(self._settings.get("public_url", "")))
         path = parsed.path or "/"
         return path.rstrip("/") or "/"
 
@@ -244,7 +245,9 @@ class TurnstileWebAppService:
                 or challenge.get("generation") != self._generation):
             return 410, {"ok": False, "message": "Verification challenge has expired"}
 
-        user_id = int(user["id"])
+        user_id = user.get("id")
+        if not isinstance(user_id, int):
+            return 403, {"ok": False, "message": "Telegram authorization is invalid or expired"}
         if not self.cache.add(
                 f"webapp_submit_rate_{user_id}", True, expire=2):
             return 429, {"ok": False, "message": "Please wait before trying again"}
@@ -315,13 +318,13 @@ class TurnstileWebAppService:
                 },
                 timeout=5,
             )
-            response.raise_for_status()
+            response = response.raise_for_status()
             result = response.json()
         except (httpx.HTTPError, ValueError) as error:
             logger.warning("Turnstile Siteverify request failed: %s", error)
             return False
 
-        if result.get("success") is not True:
+        if result.get("success") != True:
             logger.info("Turnstile rejected a token: %s", result.get("error-codes", []))
             return False
         if result.get("action") != self.VERIFY_ACTION:
@@ -415,6 +418,7 @@ class _WebAppHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
     request_queue_size = 64
     max_request_threads = 32
+    service: "TurnstileWebAppService | None" = None
 
     def __init__(self, *args, **kwargs):
         self._request_slots = threading.BoundedSemaphore(self.max_request_threads)
@@ -423,7 +427,10 @@ class _WebAppHTTPServer(ThreadingHTTPServer):
     def server_bind(self):
         TCPServer.server_bind(self)
         self.server_name = str(self.server_address[0])
-        self.server_port = int(self.server_address[1])
+        port = self.server_address[1]
+        if not isinstance(port, int):
+            raise TypeError("WebApp server port must be an integer")
+        self.server_port = port
 
     def process_request(self, request, client_address):
         if not self._request_slots.acquire(blocking=False):
@@ -445,11 +452,14 @@ class _WebAppHTTPServer(ThreadingHTTPServer):
 class _VerificationRequestHandler(BaseHTTPRequestHandler):
     """Minimal HTTP handler with strict response headers and body limits."""
 
-    server_version = "BetterForwardVerification/1"
+    server_version = "BetterForwardEnhanceVerification/1"
 
     @property
     def service(self):
-        return self.server.service
+        service = cast(_WebAppHTTPServer, self.server).service
+        if service is None:
+            raise RuntimeError("Verification service is unavailable")
+        return service
 
     def setup(self):
         super().setup()
@@ -521,7 +531,8 @@ class _VerificationRequestHandler(BaseHTTPRequestHandler):
             content_security_policy = "default-src 'none'; frame-ancestors 'none'"
         self.send_header("Content-Security-Policy", content_security_policy)
         self.end_headers()
-        self.wfile.write(body)
+        if self.wfile.write(body) != len(body):
+            logger.warning("WebApp response was only partially written")
 
-    def log_message(self, format_string, *args):
-        logger.debug("WebApp HTTP: " + format_string, *args)
+    def log_message(self, format, *args):
+        logger.debug("WebApp HTTP: " + format, *args)

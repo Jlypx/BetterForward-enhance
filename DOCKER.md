@@ -12,7 +12,7 @@ chmod +x build.sh
 ### 方式2：手动构建
 
 ```bash
-docker build -t betterforward:latest .
+docker build -t betterforward-enhance:latest .
 ```
 
 ## 🚀 运行容器
@@ -21,19 +21,19 @@ docker build -t betterforward:latest .
 
 ```bash
 docker run -d \
-  --name betterforward \
+  --name betterforward-enhance \
   -e TOKEN=你的机器人Token \
   -e GROUP_ID=你的群组ID \
   -e LANGUAGE=zh_CN \
   -v $(pwd)/data:/app/data \
-  betterforward:latest
+  betterforward-enhance:latest
 ```
 
 ### 完整配置
 
 ```bash
 docker run -d \
-  --name betterforward \
+  --name betterforward-enhance \
   --restart unless-stopped \
   -e TOKEN=你的机器人Token \
   -e GROUP_ID=你的群组ID \
@@ -41,7 +41,7 @@ docker run -d \
   -e TG_API=https://api.telegram.org \
   -e WORKERS=2 \
   -v $(pwd)/data:/app/data \
-  betterforward:latest
+  betterforward-enhance:latest
 ```
 
 ## 🛡️ 消息洪泛防护
@@ -55,7 +55,7 @@ docker run -d \
 单实例不需要 Redis。多实例部署时，构建镜像时显式安装可选依赖：
 
 ```bash
-docker build --build-arg ENABLE_REDIS=true -t betterforward:latest .
+docker build --build-arg ENABLE_REDIS=true -t betterforward-enhance:latest .
 ```
 
 随后为所有实例配置相同的 `REDIS_URL` 和 `REDIS_PREFIX`。Redis 不可用时机器人会自动降级为本地限流并记录错误日志。
@@ -92,27 +92,27 @@ Secret Key 不会显示在管理状态页，管理员发送密钥的 Telegram �
 
 ### 查看日志
 ```bash
-docker logs -f betterforward
+docker logs -f betterforward-enhance
 ```
 
 ### 停止容器
 ```bash
-docker stop betterforward
+docker stop betterforward-enhance
 ```
 
 ### 启动容器
 ```bash
-docker start betterforward
+docker start betterforward-enhance
 ```
 
 ### 重启容器
 ```bash
-docker restart betterforward
+docker restart betterforward-enhance
 ```
 
 ### 删除容器
 ```bash
-docker rm -f betterforward
+docker rm -f betterforward-enhance
 ```
 
 ## 🌍 语言设置
@@ -133,13 +133,13 @@ docker rm -f betterforward
 
 1. 停止并删除旧容器：
    ```bash
-   docker stop betterforward
-   docker rm betterforward
+   docker stop betterforward-enhance
+   docker rm betterforward-enhance
    ```
 
 2. 重新构建镜像：
    ```bash
-   docker build -t betterforward:latest .
+   docker build -t betterforward-enhance:latest .
    ```
 
 3. 启动新容器（使用相同命令）
@@ -148,22 +148,22 @@ docker rm -f betterforward
 
 ### 查看完整日志
 ```bash
-docker logs betterforward
+docker logs betterforward-enhance
 ```
 
 ### 进入容器调试
 ```bash
-docker exec -it betterforward sh
+docker exec -it betterforward-enhance sh
 ```
 
 ### 检查环境变量
 ```bash
-docker exec betterforward env
+docker exec betterforward-enhance env
 ```
 
 ### 查看数据库
 ```bash
-docker exec -it betterforward sqlite3 /app/data/storage.db
+docker exec -it betterforward-enhance sqlite3 /app/data/storage.db
 ```
 
 ## 💡 Docker Compose (推荐)
@@ -174,9 +174,9 @@ docker exec -it betterforward sqlite3 /app/data/storage.db
 version: '3.8'
 
 services:
-  betterforward:
+  betterforward-enhance:
     build: .
-    container_name: betterforward
+    container_name: betterforward-enhance
     restart: unless-stopped
     environment:
       - TOKEN=你的机器人Token

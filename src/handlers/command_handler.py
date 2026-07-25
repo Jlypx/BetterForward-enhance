@@ -1,3 +1,4 @@
+# pyright: reportUnusedCallResult=false
 """Command handling module."""
 
 import json
@@ -48,7 +49,7 @@ class CommandHandler:
             if default_message is None:
                 self.bot.send_message(message.chat.id,
                                       _("I'm a bot that forwards messages, so please just tell me what you want to say.") + "\n" +
-                                      "Powered by [BetterForward](https://github.com/SideCloudGroup/BetterForward)",
+                                      "Powered by [BetterForward Enhance](https://github.com/Jlypx/BetterForward-enhance)",
                                       parse_mode="Markdown",
                                       disable_web_page_preview=True)
             else:
@@ -71,7 +72,6 @@ class CommandHandler:
             if (user_id := db_cursor.fetchone()) is not None:
                 user_id = user_id[0]
                 # Add to blocked_users table with user info
-                username = message.from_user.username if hasattr(message, 'from_user') else None
                 # Get user info from the message that triggered ban (we need to get it from the thread)
                 # Since we don't have direct access, we'll get it from the first message in thread
                 db_cursor.execute(
@@ -99,7 +99,7 @@ class CommandHandler:
         close_forum_topic(chat_id=self.group_id, message_thread_id=message.message_thread_id,
                           token=self.bot.token)
 
-    def unban_user(self, message: Message, user_id: int = None):
+    def unban_user(self, message: Message, user_id: int | None = None):
         """Unban a user."""
         if message.chat.id != self.group_id:
             self.bot.send_message(message.chat.id, _("This command is only available to admin users."))
@@ -117,13 +117,17 @@ class CommandHandler:
                 # Extract user ID from text like "User: Name (ID: 123456)"
                 match = re.search(r'\(ID:\s*(\d+)\)', message.reply_to_message.text)
                 if match:
-                    user_id = int(match.group(1))
+                    try:
+                        user_id = int(match.group(1))
+                    except ValueError:
+                        return
                     logger.info(_("Unbanning user {} via parsed message text").format(user_id))
 
         # Second priority: Extract from command argument
         if user_id is None:
             if self.check_valid_chat(message):
-                if len((msg_split := message.text.split(" "))) == 2:
+                msg_split = (message.text or "").split()
+                if len(msg_split) == 2:
                     try:
                         user_id = int(msg_split[1])
                     except ValueError:
@@ -179,7 +183,7 @@ class CommandHandler:
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("⬅️" + _("Back"),
                                                   callback_data=json.dumps({"action": "menu"})))
-            if message.from_user.id == self.bot.get_me().id:
+            if message.from_user is not None and message.from_user.id == self.bot.get_me().id:
                 self.bot.edit_message_text(_("User unbanned"), message.chat.id, message.message_id,
                                            reply_markup=markup)
             else:
@@ -228,17 +232,29 @@ class CommandHandler:
 
     def handle_terminate(self, message: Message):
         """Handle /terminate command."""
-        if (message.chat.id == self.group_id) and (
-                self.bot.get_chat_member(message.chat.id, message.from_user.id).status in ["administrator", "creator"]):
+        sender = message.from_user
+        is_admin = (
+            sender is not None
+            and message.chat.id == self.group_id
+            and self.bot.get_chat_member(message.chat.id, sender.id).status in ["administrator", "creator"]
+        )
+        if is_admin:
             user_id = None
             thread_id = None
             if message.message_thread_id is None:
-                if len((msg_split := message.text.split(" "))) != 2:
+                command_parts = (message.text or "").split()
+                if len(command_parts) != 2:
                     self.bot.reply_to(message, "Invalid command\n"
                                                "Correct usage:```\n"
                                                "/terminate <user ID>```", parse_mode="Markdown")
                     return
-                user_id = int(msg_split[1])
+                try:
+                    user_id = int(command_parts[1])
+                except ValueError:
+                    self.bot.reply_to(message, "Invalid command\n"
+                                               "Correct usage:```\n"
+                                               "/terminate <user ID>```", parse_mode="Markdown")
+                    return
             else:
                 thread_id = message.message_thread_id
             if thread_id == 1:
@@ -302,7 +318,7 @@ class CommandHandler:
         if message.chat.id != self.group_id or message.message_thread_id is None:
             return
 
-        command_parts = message.text.split()
+        command_parts = (message.text or "").split()
         if len(command_parts) != 2 or command_parts[1].lower() not in ["true", "false"]:
             self.bot.send_message(message.chat.id,
                                   _("Invalid command format.\nUse /verify <true/false>"),
@@ -332,6 +348,8 @@ class CommandHandler:
     def handle_edit(self, message: Message):
         """Handle edited messages."""
         if self.check_valid_chat(message):
+            return
+        if message.content_type != "text" or message.text is None:
             return
 
         with sqlite3.connect(self.db_path) as db:

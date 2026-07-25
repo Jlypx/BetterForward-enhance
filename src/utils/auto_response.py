@@ -1,10 +1,10 @@
-"""Auto-response functionality for BetterForward."""
+# pyright: reportUnusedCallResult=false
+"""Auto-response functionality for BetterForward Enhance."""
 
 import re
+from re import error as RegexError
 import sqlite3
-from datetime import datetime
-
-import pytz
+from datetime import datetime, tzinfo
 
 from src.config import logger, _
 
@@ -12,11 +12,11 @@ from src.config import logger, _
 class AutoResponseManager:
     """Manages automatic responses to user messages."""
 
-    def __init__(self, db_path: str, time_zone: pytz.timezone):
+    def __init__(self, db_path: str, time_zone: tzinfo):
         self.db_path = db_path
         self.time_zone = time_zone
 
-    def update_time_zone(self, time_zone: pytz.timezone):
+    def update_time_zone(self, time_zone: tzinfo):
         """Update the timezone used for time-based responses."""
         self.time_zone = time_zone
 
@@ -49,7 +49,7 @@ class AutoResponseManager:
                     if re.match(row['key'], text) and self._is_within_time_range(
                             current_time, row['start_time'], row['end_time']):
                         return {"response": row['value'], "type": row['type']}
-                except re.error:
+                except RegexError:
                     logger.error(_("Invalid regular expression: {}").format(row['key']))
                     return None
         return None
@@ -68,7 +68,7 @@ class AutoResponseManager:
             return current_time >= start_time or current_time <= end_time
 
     def add_auto_response(self, key: str, value: str, is_regex: bool, response_type: str,
-                          start_time: str = None, end_time: str = None):
+                          start_time: str | None = None, end_time: str | None = None):
         """Add a new auto-response."""
         with sqlite3.connect(self.db_path) as db:
             db_cursor = db.cursor()

@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
-"""Test script for verification enhancement features."""
+# pyright: reportUnusedCallResult=false
+"""Verification test script."""
 
-import sys
-import sqlite3
 import os
-from pathlib import Path
+import sqlite3
+import sys
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
+sys.argv = [sys.argv[0], "-token", "test-token", "-group_id", "-100123"]
 
 def test_imports():
     """Test that all modules can be imported."""
     print("🔍 Testing imports...")
     try:
-        # Import only the modules we need, not the whole bot
-        sys.path.insert(0, str(Path(__file__).parent / "src"))
-        from utils.captcha import CaptchaManager
-        from PIL import Image, ImageDraw, ImageFont
+        from src.utils.captcha import CaptchaManager
+        from PIL import Image, ImageDraw, ImageFont  # pyright: ignore[reportMissingImports]
+        assert all((CaptchaManager, Image, ImageDraw, ImageFont))
         print("✅ All imports successful!")
         return True
     except Exception as e:
@@ -30,7 +28,7 @@ def test_database_migration():
     print("\n🔍 Testing database migration...")
     try:
         # Create test database
-        test_db = "/tmp/test_betterforward.db"
+        test_db = "/tmp/test_betterforward-enhance.db"
         if os.path.exists(test_db):
             os.remove(test_db)
 
@@ -113,15 +111,14 @@ def test_captcha_manager():
     """Test CaptchaManager functionality."""
     print("\n🔍 Testing CaptchaManager...")
     try:
-        sys.path.insert(0, str(Path(__file__).parent / "src"))
-        from utils.captcha import CaptchaManager
+        from src.utils.captcha import CaptchaManager
         from diskcache import Cache
 
         # Create mock bot
         class MockBot:
-            def send_message(self, *args, **kwargs):
+            def send_message(self, *_args, **_kwargs):
                 pass
-            def send_photo(self, *args, **kwargs):
+            def send_photo(self, *_args, **_kwargs):
                 pass
 
         cache = Cache("/tmp/test_cache")
@@ -225,7 +222,7 @@ def test_image_captcha():
     """Test image captcha generation."""
     print("\n🔍 Testing image captcha generation...")
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw, ImageFont  # pyright: ignore[reportMissingImports]
         from io import BytesIO
         import random
 
@@ -280,7 +277,7 @@ def test_image_captcha():
 def main():
     """Run all tests."""
     print("=" * 60)
-    print("🧪 BetterForward Verification Enhancement Tests")
+    print("🧪 BetterForward Enhance Verification Tests")
     print("=" * 60)
 
     results = {

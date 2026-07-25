@@ -1,15 +1,9 @@
-## Security
+# Security
 
-SideCloud takes the security of our software products and services seriously, which includes all source code
-repositories managed through our GitHub organization.
+Do not report security vulnerabilities through public GitHub issues.
 
-## Reporting Security Issues
+Use the repository's private security advisory form instead:
 
-**Please do not report security vulnerabilities through public GitHub issues.**
+https://github.com/Jlypx/BetterForward-enhance/security/advisories/new
 
-Instead, contacting us [by email](mailto:contact@sidecloud.cc) is recommended. You should receive a response within 24
-hours.
-
-## Preferred Languages
-
-We prefer all communications to be in English or Chinese (Simplified or Traditional).
+Include reproduction steps, affected versions, impact, and any proposed mitigation. Do not include bot tokens, Telegram user data, or other sensitive production data.

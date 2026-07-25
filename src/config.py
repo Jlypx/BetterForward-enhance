@@ -1,4 +1,4 @@
-"""Configuration module for BetterForward."""
+"""Configuration module for BetterForward Enhance."""
 
 import argparse
 import gettext
@@ -31,7 +31,7 @@ def positive_float(value: str) -> float:
     return parsed
 
 
-parser = argparse.ArgumentParser(description="BetterForward - Telegram message forwarding bot")
+parser = argparse.ArgumentParser(description="BetterForward Enhance - Telegram message forwarding bot")
 parser.add_argument("-token", type=str, required=True, help="Telegram bot token")
 parser.add_argument("-group_id", type=str, required=True, help="Group ID")
 parser.add_argument("-language", type=str, default="en_US", help="Language",
@@ -71,8 +71,8 @@ parser.add_argument("-rate_limit_state_size", type=positive_int, default=10000,
                     help="Maximum local rate-limit records (default: 10000)")
 parser.add_argument("-redis_url", type=str, default="",
                     help="Optional Redis URL for shared multi-instance rate limits")
-parser.add_argument("-redis_prefix", type=str, default="betterforward",
-                    help="Redis key prefix for rate-limit state (default: betterforward)")
+parser.add_argument("-redis_prefix", type=str, default="betterforward-enhance",
+                    help="Redis key prefix for rate-limit state (default: betterforward-enhance)")
 parser.add_argument("-webapp_enabled", choices=["enable", "disable"], default="disable",
                     help="Initial Turnstile WebApp state before runtime configuration")
 parser.add_argument("-webapp_public_url", type=str, default="",
@@ -102,10 +102,10 @@ logger.addHandler(chlr)
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 locale_dir = os.path.join(project_root, "locale")
-gettext.bindtextdomain("BetterForward", locale_dir)
-gettext.textdomain("BetterForward")
+gettext.bindtextdomain("BetterForwardEnhance", locale_dir)
+gettext.textdomain("BetterForwardEnhance")
 try:
-    _ = gettext.translation("BetterForward", locale_dir, languages=[args.language]).gettext
+    _ = gettext.translation("BetterForwardEnhance", locale_dir, languages=[args.language]).gettext
 except FileNotFoundError:
     _ = gettext.gettext
 
