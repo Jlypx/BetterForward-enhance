@@ -27,6 +27,14 @@ class FakeBot:
         return SimpleNamespace(message_id=len(self.sent_messages))
 
 
+class SqliteDatabase:
+    def __init__(self, path):
+        self.path = path
+
+    def get_connection(self):
+        return sqlite3.connect(self.path, isolation_level=None)
+
+
 class IngressProtectionTests(unittest.TestCase):
     def test_successful_admin_reply_promotes_only_verified_user(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -89,6 +97,56 @@ class IngressProtectionTests(unittest.TestCase):
                 args.priority_inactivity_seconds = original_timeout
                 cache.close()
 
+    def test_rate_limit_block_invalidates_webapp_and_notifies_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = str(Path(directory) / "storage.db")
+            cache = Cache(str(Path(directory) / "cache"))
+            invalidated = []
+            try:
+                with sqlite3.connect(db_path) as db:
+                    db.executescript("""
+                        CREATE TABLE blocked_users (
+                            user_id INTEGER PRIMARY KEY,
+                            username TEXT,
+                            first_name TEXT,
+                            last_name TEXT,
+                            block_reason TEXT,
+                            blocked_at TIMESTAMP,
+                            blocked_until TIMESTAMP
+                        );
+                        CREATE TABLE verified_users (user_id INTEGER PRIMARY KEY);
+                    """)
+
+                telegram = FakeBot()
+                app = object.__new__(TGBot)
+                app.cache = cache
+                app.database = SqliteDatabase(db_path)
+                app.bot = telegram
+                app.webapp_service = SimpleNamespace(
+                    invalidate_challenge=invalidated.append)
+                app.message_queue_manager = SimpleNamespace(
+                    revoke_user_priority=lambda _: None)
+                message = SimpleNamespace(
+                    chat=SimpleNamespace(type="private"),
+                    from_user=SimpleNamespace(
+                        id=7, username="user", first_name="User", last_name=None),
+                )
+
+                app._block_rate_limited_user(message)
+                app._block_rate_limited_user(message)
+
+                with sqlite3.connect(db_path) as db:
+                    block = db.execute(
+                        "SELECT block_reason, blocked_until FROM blocked_users WHERE user_id = 7"
+                    ).fetchone()
+                self.assertEqual(block[0], "rate_limit")
+                self.assertIsNotNone(block[1])
+                self.assertEqual(invalidated, [7, 7])
+                self.assertEqual(len(telegram.sent_messages), 1)
+                self.assertIn("Please try again in", telegram.sent_messages[0][0][1])
+            finally:
+                cache.close()
+
     def test_temporary_block_is_not_an_outbound_reply_amplifier(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = str(Path(directory) / "storage.db")
@@ -136,6 +194,7 @@ class IngressProtectionTests(unittest.TestCase):
                     self.assertFalse(handler.can_process_private_action(message))
                     self.assertFalse(handler.can_process_private_action(message))
                     self.assertEqual(len(bot.sent_messages), 1)
+                    self.assertIn("Please try again in", bot.sent_messages[0][0][1])
             finally:
                 cache.close()
 

@@ -46,7 +46,11 @@ class FakeBot:
         self.edits.append((text, chat_id, message_id, reply_markup))
         return SimpleNamespace(message_id=message_id, chat=SimpleNamespace(id=chat_id))
 
-    def send_message(self, chat_id, text, **kwargs):
+    def send_message(self, chat_id=None, text=None, **kwargs):
+        if chat_id is None:
+            chat_id = kwargs.pop("chat_id")
+        if text is None:
+            text = kwargs.pop("text")
         self._next_message_id += 1
         message = SimpleNamespace(
             message_id=self._next_message_id,
@@ -204,6 +208,37 @@ class AdminPanelInteractionTests(unittest.TestCase):
         )
         self.assertEqual(self.bot.sent, [])
         self.assertEqual(self.bot.edits[-1][2], panel.message_id)
+
+    def test_blocked_user_views_show_temporary_expiry_and_remaining_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = str(Path(directory) / "storage.db")
+            with sqlite3.connect(db_path) as db:
+                db.executescript("""
+                    CREATE TABLE blocked_users (
+                        user_id INTEGER PRIMARY KEY,
+                        username TEXT,
+                        first_name TEXT,
+                        last_name TEXT,
+                        block_reason TEXT,
+                        blocked_at TIMESTAMP,
+                        blocked_until TIMESTAMP
+                    );
+                    INSERT INTO blocked_users
+                        (user_id, username, first_name, block_reason, blocked_at, blocked_until)
+                    VALUES (99, 'blocked', 'Blocked', 'rate_limit', CURRENT_TIMESTAMP,
+                            datetime('now', '+1 hour'));
+                """)
+
+            self.admin.db_path = db_path
+            panel = admin_message()
+            self.admin.manage_ban_user(panel)
+
+            self.assertIn("Temporary block expires at", self.bot.sent[-1].text)
+            self.assertIn("Remaining block time", self.bot.sent[-1].text)
+
+            self.admin.select_ban_user(panel, 99)
+            self.assertIn("Temporary block expires at", self.bot.edits[-1][0])
+            self.assertIn("Remaining block time", self.bot.edits[-1][0])
 
     def test_quick_time_zone_button_updates_the_current_panel(self):
         panel = admin_message()

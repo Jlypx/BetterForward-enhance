@@ -9,7 +9,7 @@ from diskcache import Cache
 from PIL import Image, ImageDraw, ImageFont
 from telebot import types
 
-from src.config import _ as gettext_
+from src.config import _
 
 
 class CaptchaManager:
@@ -43,19 +43,19 @@ class CaptchaManager:
                 url = self.webapp_service.create_challenge(user_id, purpose)
                 markup = types.InlineKeyboardMarkup()
                 markup.add(types.InlineKeyboardButton(
-                    gettext_("Verify"),
+                    _("Verify"),
                     web_app=types.WebAppInfo(url=url),
                 ))
                 self.bot.send_message(
                     user_id,
-                    gettext_("Please complete human verification."),
+                    _("Please complete human verification."),
                     reply_markup=markup,
                 )
                 return None
             case "image":
                 return self._generate_image_captcha(user_id)
             case _:
-                raise ValueError(gettext_("Invalid captcha setting"))
+                raise ValueError(_("Invalid captcha setting"))
 
     def verify_captcha(self, user_id: int, answer: str) -> bool:
         """Verify a captcha answer."""
@@ -227,7 +227,7 @@ class CaptchaManager:
         bio.seek(0)
 
         # Send image to user
-        self.bot.send_photo(user_id, bio, caption=gettext_("Please enter the 4 digits shown in the image:"))
+        self.bot.send_photo(user_id, bio, caption=_("Please enter the 4 digits shown in the image:"))
 
         return None  # Return None because the captcha was already sent
 

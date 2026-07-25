@@ -13,6 +13,11 @@ from telebot.apihelper import ApiTelegramException
 from telebot.types import Message
 
 from src.config import logger, _
+from src.utils.blocking import (
+    format_block_duration,
+    format_block_expiry,
+    remaining_block_seconds,
+)
 
 
 class AdminHandler:
@@ -72,6 +77,15 @@ class AdminHandler:
             self.auto_response_manager.update_time_zone(self.time_zone)
         else:
             self.time_zone = pytz.UTC
+
+    def _append_temporary_block_status(self, text: str, blocked_until) -> str:
+        """Append expiry and remaining time for an active temporary block."""
+        expiry = format_block_expiry(blocked_until, self.time_zone)
+        if not expiry:
+            return text
+        text += f"{_('Temporary block expires at')}: {expiry}\n"
+        text += f"{_('Remaining block time')}: {format_block_duration(remaining_block_seconds(blocked_until))}\n"
+        return text
 
     def menu(self, message: Message, edit: bool = False):
         """Display the main admin menu."""
@@ -438,7 +452,10 @@ class AdminHandler:
             db_cursor = db.cursor()
 
             # Get total count
-            db_cursor.execute("SELECT COUNT(*) FROM blocked_users")
+            db_cursor.execute(
+                """SELECT COUNT(*) FROM blocked_users
+                   WHERE blocked_until IS NULL OR blocked_until > CURRENT_TIMESTAMP"""
+            )
             total = db_cursor.fetchone()[0]
             total_pages = (total + page_size - 1) // page_size if total > 0 else 1
             page = max(1, min(page, total_pages))
@@ -446,8 +463,9 @@ class AdminHandler:
             # Query from blocked_users table with pagination
             offset = (page - 1) * page_size
             db_cursor.execute("""
-                              SELECT user_id, username, first_name, last_name, blocked_at
+                              SELECT user_id, username, first_name, last_name, blocked_at, blocked_until
                               FROM blocked_users
+                              WHERE blocked_until IS NULL OR blocked_until > CURRENT_TIMESTAMP
                               ORDER BY blocked_at DESC LIMIT ?
                               OFFSET ?
                               """, (page_size, offset))
@@ -465,7 +483,7 @@ class AdminHandler:
                 text += _("No banned users") + "\n"
             else:
                 for user in banned_users:
-                    user_id, username, first_name, last_name, blocked_at = user
+                    user_id, username, first_name, last_name, blocked_at, blocked_until = user
                     text += "-" * 20 + "\n"
                     text += f"User ID: {user_id}\n"
 
@@ -477,6 +495,7 @@ class AdminHandler:
                         text += f"{_('Username')}: @{username}\n"
 
                     text += f"{_('Blocked at')}: {blocked_at}\n"
+                    text = self._append_temporary_block_status(text, blocked_until)
 
                     markup.add(types.InlineKeyboardButton(
                         text=f"ID: {user_id}",
@@ -510,7 +529,9 @@ class AdminHandler:
             db_cursor = db.cursor()
             # Get user info from blocked_users
             db_cursor.execute(
-                "SELECT username, first_name, last_name, blocked_at FROM blocked_users WHERE user_id = ? LIMIT 1",
+                "SELECT username, first_name, last_name, blocked_at, blocked_until "
+                "FROM blocked_users WHERE user_id = ? "
+                "AND (blocked_until IS NULL OR blocked_until > CURRENT_TIMESTAMP) LIMIT 1",
                 (user_id,)
             )
             user_info = db_cursor.fetchone()
@@ -523,7 +544,7 @@ class AdminHandler:
                                            reply_markup=markup)
                 return
 
-            username, first_name, last_name, blocked_at = user_info
+            username, first_name, last_name, blocked_at, blocked_until = user_info
 
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("❌" + _("Unban"),
@@ -541,6 +562,7 @@ class AdminHandler:
         if username:
             text += f"{_('Username')}: @{username}\n"
         text += f"{_('Blocked at')}: {blocked_at}\n"
+        text = self._append_temporary_block_status(text, blocked_until)
 
         self.bot.edit_message_text(text, message.chat.id, message.message_id,
                                    reply_markup=markup)

@@ -6,6 +6,7 @@ import hmac
 import json
 import socket
 import sqlite3
+from contextlib import closing
 import sys
 import tempfile
 import time
@@ -117,7 +118,7 @@ class WebAppVerificationTests(unittest.TestCase):
 
     def test_normal_webapp_verification_cannot_bypass_an_active_block(self):
         db_path = str(Path(self.directory.name) / "verification.db")
-        with sqlite3.connect(db_path) as db:
+        with closing(sqlite3.connect(db_path)) as db:
             db.executescript("""
                 CREATE TABLE blocked_users (
                     user_id INTEGER PRIMARY KEY,
@@ -133,16 +134,19 @@ class WebAppVerificationTests(unittest.TestCase):
                     (user_id, block_reason, blocked_until)
                     VALUES (123, 'rate_limit', datetime('now', '+1 hour'));
             """)
+            db.commit()
 
         bot = object.__new__(TGBot)
         bot.db_path = db_path
         bot.bot = FakeBot()
         bot.captcha_manager = CaptchaManager(bot.bot, self.cache)
         bot.message_handler = SimpleNamespace()
-        ok, _ = bot._handle_webapp_verification(
+        ok, result = bot._handle_webapp_verification(
             123, "normal", {"id": 123, "first_name": "Test"})
         self.assertFalse(ok)
-        with sqlite3.connect(db_path) as db:
+        self.assertEqual(result["code"], "temporarily_blocked")
+        self.assertGreater(result["remaining_seconds"], 0)
+        with closing(sqlite3.connect(db_path)) as db:
             self.assertIsNone(db.execute(
                 "SELECT 1 FROM verified_users WHERE user_id = 123").fetchone())
 
@@ -188,8 +192,48 @@ class WebAppVerificationTests(unittest.TestCase):
         with urllib.request.urlopen(request_url, timeout=2) as response:
             body = response.read().decode()
             self.assertIn("Verify identity", body)
+            self.assertIn("验证身份", body)
+            self.assertIn("本人確認", body)
             self.assertIn("Content-Security-Policy", response.headers)
             self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    def test_invalidated_challenge_returns_a_localized_terminal_page(self):
+        url = self.service.create_challenge(123)
+        challenge_id = url.split("challenge=", 1)[1]
+        self.service.invalidate_challenge(123)
+
+        status, _, body, nonce = self.service.handle_page(challenge_id)
+
+        self.assertEqual(status, 410)
+        self.assertIsNotNone(nonce)
+        self.assertIn("验证已失效", body)
+        self.assertIn("認証の有効期限切れ", body)
+        self.assertFalse(self.cache.get(f"captcha_{123}"))
+
+    def test_terminal_callback_failure_discards_the_challenge_without_retry(self):
+        url = self.service.create_challenge(123)
+        challenge_id = url.split("challenge=", 1)[1]
+        self.service.on_verified = Mock(return_value=(False, {
+            "code": "temporarily_blocked", "remaining_seconds": 60,
+        }))
+        payload = {
+            "challenge": challenge_id,
+            "init_data": signed_init_data("test-token", 123),
+            "turnstile_token": "valid-token",
+        }
+
+        with patch.object(self.service, "verify_turnstile", return_value=True):
+            status, result = self.service.handle_verification(payload)
+
+        self.assertEqual(status, 403)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["retryable"])
+        self.assertEqual(result["code"], "temporarily_blocked")
+        self.assertIsNone(self.cache.get(f"webapp_challenge_{challenge_id}"))
+        self.assertIsNone(self.cache.get(f"captcha_{123}"))
+
+        status, _ = self.service.handle_verification(payload)
+        self.assertEqual(status, 410)
 
     def test_turnstile_response_checks_action_and_hostname(self):
         response = Mock()

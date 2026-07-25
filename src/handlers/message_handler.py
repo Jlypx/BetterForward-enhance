@@ -9,6 +9,11 @@ from telebot.formatting import apply_html_entities
 from telebot.types import Message
 
 from src.config import logger, _
+from src.utils.blocking import (
+    BLOCKED_REPLY_COOLDOWN_SECONDS,
+    remaining_block_seconds,
+    temporary_block_message,
+)
 from src.utils.helpers import escape_markdown
 
 
@@ -201,7 +206,7 @@ class MessageHandler:
 
         # FIRST: Check if user is blocked - if so, don't generate any captcha
         blocked_result = cursor.execute(
-            """SELECT block_reason FROM blocked_users
+            """SELECT block_reason, blocked_until FROM blocked_users
                WHERE user_id = ?
                  AND (blocked_until IS NULL OR blocked_until > CURRENT_TIMESTAMP)
                LIMIT 1""",
@@ -209,7 +214,8 @@ class MessageHandler:
         ).fetchone()
 
         if blocked_result:
-            block_reason = blocked_result[0] if blocked_result[0] else "admin"
+            block_reason, blocked_until = blocked_result
+            block_reason = block_reason or "admin"
 
             # Check if user is in appeal verification mode
             appeal_verification = self.cache.get(f"appeal_verification_{user_id}")
@@ -241,7 +247,8 @@ class MessageHandler:
                 blocked_reply_key = f"blocked_reply_rate_limit_{user_id}"
                 if self.cache.get(blocked_reply_key):
                     return False
-                self.cache.set(blocked_reply_key, True, 60)
+                self.cache.set(
+                    blocked_reply_key, True, BLOCKED_REPLY_COOLDOWN_SECONDS)
 
                 # User is blocked - show different messages based on block reason
                 if block_reason == "auto_attempts":
@@ -261,7 +268,7 @@ class MessageHandler:
                 elif block_reason == "rate_limit":
                     self.bot.send_message(
                         message.chat.id,
-                        _("❌ Your account is temporarily blocked because you sent messages too quickly. Please try again later.")
+                        temporary_block_message(remaining_block_seconds(blocked_until))
                     )
                 else:
                     # Admin blocked: send custom blocked user reply

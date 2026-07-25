@@ -203,10 +203,41 @@ class TurnstileWebAppService:
         query = urlencode({"challenge": challenge_id})
         return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", query, ""))
 
+    def invalidate_challenge(self, user_id):
+        """Remove a user's outstanding WebApp verification challenge."""
+        challenge_id = self.cache.get(f"webapp_challenge_user_{user_id}")
+        if challenge_id:
+            self.cache.delete(f"webapp_challenge_{challenge_id}")
+        self.cache.delete(f"webapp_challenge_user_{user_id}")
+        pending = self.cache.get(f"captcha_{user_id}")
+        if isinstance(pending, dict) and pending.get("type") == "webapp":
+            self.cache.delete(f"captcha_{user_id}")
+
+    def _discard_challenge(self, challenge_id, user_id, purpose=None):
+        """Remove a completed or terminally rejected challenge exactly once."""
+        self.cache.delete(f"webapp_challenge_{challenge_id}")
+        if self.cache.get(f"webapp_challenge_user_{user_id}") == challenge_id:
+            self.cache.delete(f"webapp_challenge_user_{user_id}")
+        pending = self.cache.get(f"captcha_{user_id}")
+        if (isinstance(pending, dict)
+                and pending.get("challenge_id") == challenge_id):
+            self.cache.delete(f"captcha_{user_id}")
+        if purpose == "appeal":
+            self.cache.delete(f"appeal_verification_{user_id}")
+
     def _page_path(self):
         parsed = urlsplit(str(self._settings.get("public_url", "")))
         path = parsed.path or "/"
         return path.rstrip("/") or "/"
+
+    @staticmethod
+    def _failure(status, code, retryable=False, **details):
+        return status, {
+            "ok": False,
+            "code": code,
+            "retryable": retryable,
+            **details,
+        }
 
     def handle_page(self, challenge_id):
         with self._lock:
@@ -214,7 +245,8 @@ class TurnstileWebAppService:
         challenge = self.cache.get(f"webapp_challenge_{challenge_id}")
         if (settings.get("enabled") != "enable" or not challenge
                 or challenge.get("generation") != self._generation):
-            return 410, "text/html; charset=utf-8", self._expired_page(), None
+            nonce = secrets.token_urlsafe(18)
+            return 410, "text/html; charset=utf-8", self._expired_page(nonce), nonce
         nonce = secrets.token_urlsafe(18)
         return 200, "text/html; charset=utf-8", self._render_page(
             settings["site_key"], challenge_id, self._page_path(), nonce), nonce
@@ -224,56 +256,63 @@ class TurnstileWebAppService:
         init_data = str(payload.get("init_data") or "")
         turnstile_token = str(payload.get("turnstile_token") or "")
         if not challenge_id or len(challenge_id) > 128:
-            return 400, {"ok": False, "message": "Invalid verification challenge"}
+            return self._failure(400, "invalid_challenge")
         if not init_data or len(init_data) > 8192:
-            return 400, {"ok": False, "message": "Open verification from Telegram"}
+            return self._failure(400, "open_from_telegram")
         if not turnstile_token or len(turnstile_token) > 4096:
-            return 400, {"ok": False, "message": "Turnstile verification is required"}
+            return self._failure(400, "turnstile_required")
 
         with self._lock:
             settings = dict(self._settings)
         if settings.get("enabled") != "enable":
-            return 503, {"ok": False, "message": "Verification is temporarily unavailable"}
+            return self._failure(503, "verification_unavailable")
 
         user = self.validate_telegram_init_data(init_data, settings["auth_max_age"])
         if user is None:
-            return 403, {"ok": False, "message": "Telegram authorization is invalid or expired"}
+            return self._failure(403, "telegram_authorization_invalid")
 
         challenge_key = f"webapp_challenge_{challenge_id}"
         challenge = self.cache.get(challenge_key)
         if (not challenge or challenge.get("user_id") != user.get("id")
                 or challenge.get("generation") != self._generation):
-            return 410, {"ok": False, "message": "Verification challenge has expired"}
+            return self._failure(410, "challenge_expired")
 
         user_id = user.get("id")
         if not isinstance(user_id, int):
-            return 403, {"ok": False, "message": "Telegram authorization is invalid or expired"}
+            return self._failure(403, "telegram_authorization_invalid")
         if not self.cache.add(
                 f"webapp_submit_rate_{user_id}", True, expire=2):
-            return 429, {"ok": False, "message": "Please wait before trying again"}
+            return self._failure(429, "wait_to_retry", retryable=True)
 
         turnstile_result = self.verify_turnstile(turnstile_token, settings)
         if not turnstile_result:
-            return 403, {"ok": False, "message": "Human verification failed"}
+            return self._failure(403, "human_verification_failed", retryable=True)
 
         lock_key = f"webapp_challenge_lock_{challenge_id}"
         if not self.cache.add(lock_key, True, expire=30):
-            return 409, {"ok": False, "message": "Verification is already being processed"}
+            return self._failure(409, "verification_in_progress")
         try:
             challenge = self.cache.get(challenge_key)
             if (not challenge or challenge.get("user_id") != user_id
                     or challenge.get("generation") != self._generation):
-                return 410, {"ok": False, "message": "Verification challenge has expired"}
-            ok, message = self.on_verified(
+                return self._failure(410, "challenge_expired")
+            ok, outcome = self.on_verified(
                 user_id, challenge.get("purpose", "normal"), user)
+            details = dict(outcome) if isinstance(outcome, dict) else {
+                "message": str(outcome or "")}
             if not ok:
-                return 403, {"ok": False, "message": message}
+                details.setdefault("code", "verification_rejected")
+                details.setdefault("retryable", False)
+                if not details["retryable"]:
+                    self._discard_challenge(
+                        challenge_id, user_id, challenge.get("purpose"))
+                return 403, {"ok": False, **details}
 
-            self.cache.delete(challenge_key)
-            self.cache.delete(f"webapp_challenge_user_{user_id}")
-            self.cache.delete(f"captcha_{user_id}")
-            self.cache.delete(f"appeal_verification_{user_id}")
-            return 200, {"ok": True, "message": message or "Verification successful"}
+            self._discard_challenge(
+                challenge_id, user_id, challenge.get("purpose"))
+            details.setdefault("code", "verification_successful")
+            details.setdefault("message", "Verification successful")
+            return 200, {"ok": True, **details}
         finally:
             self.cache.delete(lock_key)
 
@@ -339,77 +378,186 @@ class TurnstileWebAppService:
     @staticmethod
     def _render_page(site_key, challenge_id, page_path, nonce):
         verify_path = (page_path.rstrip("/") if page_path != "/" else "") + "/verify"
-        site_key_json = json.dumps(site_key)
-        challenge_json = json.dumps(challenge_id)
-        verify_path_json = json.dumps(verify_path)
-        return f"""<!doctype html>
+        page = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Verification</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<style nonce="{nonce}">
-:root {{ color-scheme: light dark; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
-* {{ box-sizing: border-box; }}
-body {{ margin:0; min-height:100vh; display:grid; place-items:center; padding:24px; color:var(--tg-theme-text-color,#161616); background:var(--tg-theme-bg-color,#f5f6f7); }}
-main {{ width:min(100%,420px); text-align:center; }}
-h1 {{ margin:0 0 10px; font-size:24px; letter-spacing:0; }}
-p {{ margin:0 0 24px; color:var(--tg-theme-hint-color,#707579); font-size:15px; line-height:1.5; }}
-#widget {{ min-height:70px; display:flex; justify-content:center; }}
-#status {{ min-height:24px; margin-top:18px; font-size:14px; }}
-.success {{ color:#16854b; }} .error {{ color:#c73737; }}
+<style nonce="__NONCE__">
+:root { color-scheme: light dark; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+* { box-sizing: border-box; }
+body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px; color:var(--tg-theme-text-color,#161616); background:var(--tg-theme-bg-color,#f5f6f7); }
+main { width:min(100%,420px); text-align:center; }
+h1 { margin:0 0 10px; font-size:24px; letter-spacing:0; }
+p { margin:0 0 24px; color:var(--tg-theme-hint-color,#707579); font-size:15px; line-height:1.5; }
+#widget { min-height:70px; display:flex; justify-content:center; }
+#status { min-height:24px; margin-top:18px; font-size:14px; }
+.success { color:#16854b; } .error { color:#c73737; }
 </style>
-<script nonce="{nonce}">
-const tg = window.Telegram.WebApp;
-const challenge = {challenge_json};
-const siteKey = {site_key_json};
-const verifyPath = {verify_path_json};
+<script nonce="__NONCE__">
+const tg = window.Telegram && window.Telegram.WebApp;
+const challenge = __CHALLENGE__;
+const siteKey = __SITE_KEY__;
+const verifyPath = __VERIFY_PATH__;
+const translations = {
+  en: {
+    title: "Verify identity", subtitle: "Complete the check to continue.",
+    checking: "Checking...", verified: "Verification successful",
+    failure: "Verification failed", expired: "Verification expired. Try again.",
+    challengeExpired: "This verification link has expired. Return to Telegram and request a new verification.",
+    openFromTelegram: "Open this verification from Telegram.",
+    unavailable: "Verification is temporarily unavailable.",
+    humanFailed: "Human verification failed. Please try again.",
+    wait: "Please wait a moment before trying again.",
+    processing: "Verification is already being processed.",
+    blocked: "Your account is currently blocked.",
+    temporaryBlocked: duration => `Your account is temporarily blocked. Try again in ${duration}.`,
+    loadFailed: "Could not load verification.", network: "Network error. Please try again."
+  },
+  zh: {
+    title: "验证身份", subtitle: "完成验证后即可继续。",
+    checking: "正在验证...", verified: "验证成功",
+    failure: "验证失败", expired: "验证已过期，请重试。",
+    challengeExpired: "此验证链接已失效。请返回 Telegram 重新发起验证。",
+    openFromTelegram: "请从 Telegram 中打开此验证页面。",
+    unavailable: "验证暂时不可用。",
+    humanFailed: "人机验证失败，请重试。",
+    wait: "请稍候再试。", processing: "验证正在处理中。",
+    blocked: "你的账户当前已被封禁。",
+    temporaryBlocked: duration => `你的账户因发送消息过快被临时封禁，请在 ${duration} 后重试。`,
+    loadFailed: "无法加载验证。", network: "网络错误，请重试。"
+  },
+  ja: {
+    title: "本人確認", subtitle: "確認を完了すると続行できます。",
+    checking: "確認しています...", verified: "認証に成功しました",
+    failure: "認証に失敗しました", expired: "認証の有効期限が切れました。もう一度お試しください。",
+    challengeExpired: "この認証リンクの有効期限が切れました。Telegram に戻って新しい認証を開始してください。",
+    openFromTelegram: "Telegram からこの認証ページを開いてください。",
+    unavailable: "認証は一時的に利用できません。",
+    humanFailed: "人による認証に失敗しました。もう一度お試しください。",
+    wait: "しばらく待ってからもう一度お試しください。",
+    processing: "認証はすでに処理中です。",
+    blocked: "アカウントは現在ブロックされています。",
+    temporaryBlocked: duration => `メッセージ送信が速すぎるため、アカウントは一時的にブロックされています。${duration} 後に再試行してください。`,
+    loadFailed: "認証を読み込めませんでした。", network: "ネットワークエラーです。もう一度お試しください。"
+  }
+};
+function language() {
+  const code = String((tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.language_code) || navigator.language || "en").toLowerCase();
+  if (code.startsWith("zh")) return "zh";
+  if (code.startsWith("ja")) return "ja";
+  return "en";
+}
+const locale = language();
+const text = translations[locale];
 let widgetId = null;
-tg.ready();
-tg.expand();
-function setStatus(text, kind = "") {{
+let submitting = false;
+if (tg) { tg.ready(); tg.expand(); }
+function formatDuration(value) {
+  const total = Math.max(1, Math.ceil(Number(value) || 0));
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (locale === "zh") return days ? `${days}天${hours}小时${minutes}分钟` : hours ? `${hours}小时${minutes}分钟` : minutes ? `${minutes}分钟${seconds}秒` : `${seconds}秒`;
+  if (locale === "ja") return days ? `${days}日${hours}時間${minutes}分` : hours ? `${hours}時間${minutes}分` : minutes ? `${minutes}分${seconds}秒` : `${seconds}秒`;
+  return days ? `${days}d ${hours}h ${minutes}m` : hours ? `${hours}h ${minutes}m` : minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+function messageFor(result) {
+  switch (result.code) {
+    case "challenge_expired": case "invalid_challenge": return text.challengeExpired;
+    case "open_from_telegram": case "telegram_authorization_invalid": return text.openFromTelegram;
+    case "verification_unavailable": return text.unavailable;
+    case "turnstile_required": case "human_verification_failed": return text.humanFailed;
+    case "wait_to_retry": return text.wait;
+    case "verification_in_progress": return text.processing;
+    case "account_blocked": return text.blocked;
+    case "temporarily_blocked": return text.temporaryBlocked(formatDuration(result.remaining_seconds));
+    case "verification_successful": return text.verified;
+    default: return result.message || text.failure;
+  }
+}
+function setStatus(message, kind = "") {
   const node = document.getElementById("status");
-  node.textContent = text;
+  node.textContent = message;
   node.className = kind;
-}}
-async function submitVerification(token) {{
-  setStatus("Checking...");
-  try {{
-    const response = await fetch(verifyPath, {{
+}
+function showTerminal(result) {
+  setStatus(messageFor(result), result.ok ? "success" : "error");
+  document.getElementById("widget").hidden = true;
+}
+function applyTranslations() {
+  document.documentElement.lang = locale === "zh" ? "zh-CN" : locale;
+  document.title = text.title;
+  document.getElementById("title").textContent = text.title;
+  document.getElementById("subtitle").textContent = text.subtitle;
+}
+async function submitVerification(token) {
+  if (submitting) return;
+  submitting = true;
+  setStatus(text.checking);
+  try {
+    const response = await fetch(verifyPath, {
       method: "POST",
-      headers: {{"Content-Type": "application/json"}},
-      body: JSON.stringify({{challenge, init_data: tg.initData, turnstile_token: token}}),
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({challenge, init_data: tg ? tg.initData : "", turnstile_token: token}),
       credentials: "same-origin"
-    }});
-    const result = await response.json();
-    if (!response.ok || !result.ok) throw new Error(result.message || "Verification failed");
-    setStatus(result.message || "Verification successful", "success");
-    setTimeout(() => tg.close(), 900);
-  }} catch (error) {{
-    setStatus(error.message || "Verification failed", "error");
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok) {
+      if (result.retryable === false) {
+        showTerminal(result);
+      } else {
+        setStatus(messageFor(result), "error");
+        if (window.turnstile && widgetId !== null) window.turnstile.reset(widgetId);
+        submitting = false;
+      }
+      return;
+    }
+    showTerminal(result);
+    if (tg) setTimeout(() => tg.close(), 900);
+  } catch (_) {
+    setStatus(text.network, "error");
     if (window.turnstile && widgetId !== null) window.turnstile.reset(widgetId);
-  }}
-}}
-function onTurnstileLoad() {{
-  if (!tg.initData) {{ setStatus("Open this page from Telegram", "error"); return; }}
-  widgetId = turnstile.render("#widget", {{
+    submitting = false;
+  }
+}
+function onTurnstileLoad() {
+  if (!tg || !tg.initData) {
+    showTerminal({ok: false, code: "open_from_telegram"});
+    return;
+  }
+  widgetId = turnstile.render("#widget", {
     sitekey: siteKey,
-    action: "{TurnstileWebAppService.VERIFY_ACTION}",
+    action: "__VERIFY_ACTION__",
     callback: submitVerification,
-    "error-callback": () => setStatus("Could not load verification", "error"),
-    "expired-callback": () => setStatus("Verification expired. Try again.", "error")
-  }});
-}}
+    "error-callback": () => { setStatus(text.loadFailed, "error"); submitting = false; },
+    "expired-callback": () => { setStatus(text.expired, "error"); submitting = false; }
+  });
+}
+window.addEventListener("DOMContentLoaded", applyTranslations);
 </script>
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileLoad&amp;render=explicit" async defer></script>
 </head>
-<body><main><h1>Verify identity</h1><p>Complete the check to continue.</p><div id="widget"></div><div id="status" role="status" aria-live="polite"></div></main></body>
+<body><main><h1 id="title">Verify identity</h1><p id="subtitle">Complete the check to continue.</p><div id="widget"></div><div id="status" role="status" aria-live="polite"></div></main></body>
 </html>"""
+        return (page.replace("__NONCE__", nonce)
+                    .replace("__CHALLENGE__", json.dumps(challenge_id))
+                    .replace("__SITE_KEY__", json.dumps(site_key))
+                    .replace("__VERIFY_PATH__", json.dumps(verify_path))
+                    .replace("__VERIFY_ACTION__", TurnstileWebAppService.VERIFY_ACTION))
 
     @staticmethod
-    def _expired_page():
-        return """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Expired</title></head><body><main><h1>Verification expired</h1><p>Return to Telegram and request a new verification.</p></main></body></html>"""
+    def _expired_page(nonce):
+        page = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Verification expired</title><script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style nonce="__NONCE__">:root { color-scheme: light dark; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; } body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px; color:var(--tg-theme-text-color,#161616); background:var(--tg-theme-bg-color,#f5f6f7); } main { width:min(100%,420px); text-align:center; } h1 { margin:0 0 10px; font-size:24px; letter-spacing:0; } p { margin:0; color:var(--tg-theme-hint-color,#707579); font-size:15px; line-height:1.5; }</style>
+<script nonce="__NONCE__">const tg = window.Telegram && window.Telegram.WebApp; if (tg) { tg.ready(); tg.expand(); } const code = String((tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.language_code) || navigator.language || "en").toLowerCase(); const text = code.startsWith("zh") ? ["验证已失效", "此验证链接已失效。请返回 Telegram 重新发起验证。"] : code.startsWith("ja") ? ["認証の有効期限切れ", "この認証リンクの有効期限が切れました。Telegram に戻って新しい認証を開始してください。"] : ["Verification expired", "This verification link has expired. Return to Telegram and request a new verification."]; window.addEventListener("DOMContentLoaded", () => { document.documentElement.lang = code.startsWith("zh") ? "zh-CN" : code.startsWith("ja") ? "ja" : "en"; document.title = text[0]; document.getElementById("title").textContent = text[0]; document.getElementById("message").textContent = text[1]; });</script>
+</head><body><main><h1 id="title">Verification expired</h1><p id="message">This verification link has expired. Return to Telegram and request a new verification.</p></main></body></html>"""
+        return page.replace("__NONCE__", nonce)
 
 
 class _WebAppHTTPServer(ThreadingHTTPServer):

@@ -2,6 +2,7 @@
 """Main bot class for BetterForward Enhance."""
 
 import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytz
@@ -15,6 +16,11 @@ from src.handlers.callback_handler import CallbackHandler
 from src.handlers.command_handler import CommandHandler
 from src.handlers.message_handler import MessageHandler
 from src.utils.auto_response import AutoResponseManager
+from src.utils.blocking import (
+    BLOCKED_REPLY_COOLDOWN_SECONDS,
+    remaining_block_seconds,
+    temporary_block_message,
+)
 from src.utils.captcha import CaptchaManager
 from src.utils.message_queue import MessageQueueManager
 from src.utils.spam_detector_manager import SpamDetectorManager
@@ -272,10 +278,10 @@ class TGBot:
 
     def _handle_webapp_verification(self, user_id, purpose, user_data):
         """Apply a verified one-time WebApp challenge to its declared purpose."""
-        with sqlite3.connect(self.db_path) as db:
+        with closing(sqlite3.connect(self.db_path)) as db:
             cursor = db.cursor()
             blocked = cursor.execute(
-                """SELECT block_reason FROM blocked_users
+                """SELECT block_reason, blocked_until FROM blocked_users
                    WHERE user_id = ?
                      AND (blocked_until IS NULL OR blocked_until > CURRENT_TIMESTAMP)""",
                 (user_id,),
@@ -283,16 +289,22 @@ class TGBot:
 
             if purpose == "normal":
                 if blocked:
-                    return False, _("Your account is currently blocked")
+                    block_reason, blocked_until = blocked
+                    if block_reason == "rate_limit":
+                        return False, {
+                            "code": "temporarily_blocked",
+                            "remaining_seconds": remaining_block_seconds(blocked_until),
+                        }
+                    return False, {"code": "account_blocked"}
                 self.captcha_manager.set_user_verified(user_id, db)
                 self.captcha_manager.reset_attempts(user_id, db)
                 self.bot.send_message(
                     user_id, _("Verification successful, you can now send messages"))
-                return True, _("Verification successful")
+                return True, {"code": "verification_successful"}
 
             if purpose == "appeal":
                 if not blocked:
-                    return False, _("Your account is not blocked")
+                    return False, {"code": "account_not_blocked"}
                 user = SimpleNamespace(
                     id=user_id,
                     username=user_data.get("username"),
@@ -300,9 +312,9 @@ class TGBot:
                     last_name=user_data.get("last_name") or "",
                 )
                 self.message_handler._submit_appeal(user_id, user, db, cursor)
-                return True, _("Appeal verification successful")
+                return True, {"code": "appeal_verification_successful"}
 
-        return False, _("Invalid verification purpose")
+        return False, {"code": "invalid_verification_purpose"}
 
     def load_settings(self):
         """Load settings from database into cache."""
@@ -557,6 +569,8 @@ class TGBot:
 
         self._cleanup_expired_rate_limit_blocks()
         user = message.from_user
+        temporary_block_applied = False
+        remaining_seconds = None
         db = self.database.get_connection()
         try:
             cursor = db.cursor()
@@ -584,11 +598,35 @@ class TGBot:
                     (user.id, user.username, user.first_name, user.last_name,
                      args.abuse_block_seconds),
                 )
+                temporary_block_applied = cursor.rowcount > 0
+                if temporary_block_applied:
+                    blocked_until = cursor.execute(
+                        "SELECT blocked_until FROM blocked_users WHERE user_id = ?",
+                        (user.id,),
+                    ).fetchone()[0]
+                    remaining_seconds = remaining_block_seconds(blocked_until)
         finally:
             db.close()
         self.cache.delete(f"verified_{user.id}")
         self.cache.delete(f"priority_user_{user.id}")
         self.message_queue_manager.revoke_user_priority(user.id)
+        if not temporary_block_applied:
+            return
+
+        service = getattr(self, "webapp_service", None)
+        if service:
+            service.invalidate_challenge(user.id)
+        else:
+            self.cache.delete(f"captcha_{user.id}")
+
+        notice_key = f"blocked_reply_rate_limit_{user.id}"
+        if self.cache.get(notice_key):
+            return
+        self.cache.set(notice_key, True, BLOCKED_REPLY_COOLDOWN_SECONDS)
+        try:
+            self.bot.send_message(user.id, temporary_block_message(remaining_seconds))
+        except Exception as error:
+            logger.warning("Could not send temporary-block notice to user %s: %s", user.id, error)
 
     def push_messages(self, message):
         """Push messages to the queue for processing."""
